@@ -35,17 +35,18 @@ jobs:
           rm -rf android
           flutter create --platforms=android --project-name=attendance .
 
-      - name: Force Upgrade Kotlin Version
+      - name: Precise Kotlin Upgrade
         run: |
           python3 -c "
-          import os
+          import os, re
           for root, _, files in os.walk('android'):
               for file in files:
                   if file.endswith(('.gradle', '.gradle.kts')):
                       p = os.path.join(root, file)
                       with open(p, 'r') as f:
                           s = f.read()
-                      s = s.replace('1.7.1', '1.9.22').replace('1.8.0', '1.9.22').replace('1.8.10', '1.9.22').replace('1.8.20', '1.9.22')
+                      s = re.sub(r'id\s+[\'\"]org\.jetbrains\.kotlin\.android[\'\"]\s+version\s+[\'\"][^\'\"]+[\'\"]', 'id \"org.jetbrains.kotlin.android\" version \"1.9.22\"', s)
+                      s = re.sub(r'ext\.kotlin_version\s*=\s*[\'\"][^\'\"]+[\'\"]', 'ext.kotlin_version = \"1.9.22\"', s)
                       with open(p, 'w') as f:
                           f.write(s)
           "
