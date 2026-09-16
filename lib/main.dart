@@ -1,10 +1,13 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,15 +28,217 @@ class SVTIApp extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'SVTI Attendance',
-      theme: ThemeData(primarySwatch: Colors.blue),
-      home: AttendanceScreen(camera: camera),
+      theme: ThemeData(
+        primaryColor: const Color(0xFF0D47A1), // Deep Blue
+        scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+      ),
+      home: AuthWrapper(camera: camera),
     );
   }
 }
 
+class AuthWrapper extends StatefulWidget {
+  final CameraDescription camera;
+  const AuthWrapper({super.key, required this.camera});
+
+  @override
+  State<AuthWrapper> createState() => _AuthWrapperState();
+}
+
+class _AuthWrapperState extends State<AuthWrapper> {
+  bool _isLoggedIn = false;
+  String _userName = "";
+  String _userPhone = "";
+  bool _isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkSession();
+  }
+
+  Future<void> _checkSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _userName = prefs.getString('userName') ?? "";
+      _userPhone = prefs.getString('userPhone') ?? "";
+      _isLoggedIn = _userName.isNotEmpty && _userPhone.isNotEmpty;
+      _isLoading = false;
+    });
+  }
+
+  void _onLoginSuccess(String name, String phone) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('userName', name);
+    await prefs.setString('userPhone', phone);
+    setState(() {
+      _userName = name;
+      _userPhone = phone;
+      _isLoggedIn = true;
+    });
+  }
+
+  void _onLogout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    setState(() {
+      _isLoggedIn = false;
+      _userName = "";
+      _userPhone = "";
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_isLoading) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+    return _isLoggedIn
+        ? AttendanceScreen(
+            camera: widget.camera,
+            userName: _userName,
+            userPhone: _userPhone,
+            onLogout: _onLogout,
+          )
+        : SignUpScreen(onLoginSuccess: _onLoginSuccess);
+  }
+}
+
+// SIGN UP / PHONE AUTH SCREEN
+class SignUpScreen extends StatefulWidget {
+  final Function(String name, String phone) onLoginSuccess;
+  const SignUpScreen({super.key, required this.onLoginSuccess});
+
+  @override
+  State<SignUpScreen> createState() => _SignUpScreenState();
+}
+
+class _SignUpScreenState extends State<SignUpScreen> {
+  final _nameController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _otpController = TextEditingController();
+  bool _codeSent = false;
+  String _simulatedOtp = "123456";
+  String _status = "";
+
+  void _sendCode() {
+    if (_nameController.text.trim().isEmpty || _phoneController.text.trim().length < 10) {
+      setState(() => _status = "Please enter full name & valid phone number");
+      return;
+    }
+    setState(() {
+      _codeSent = true;
+      _status = "Verification code sent! (Use code: $_simulatedOtp)";
+    });
+  }
+
+  void _verifyCode() {
+    if (_otpController.text.trim() == _simulatedOtp) {
+      widget.onLoginSuccess(_nameController.text.trim(), _phoneController.text.trim());
+    } else {
+      setState(() => _status = "Invalid verification code. Try again.");
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // Branding Header
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.red.shade700, width: 2),
+                ),
+                child: const Column(
+                  children: [
+                    Icon(Icons.shield, size: 50, color: Colors.blueAccent),
+                    SizedBox(height: 6),
+                    Text("SVTI MOBILE", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                    Text("Attendance Authentication", style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              if (!_codeSent) ...[
+                TextField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(
+                    labelText: "Full Name",
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.person, color: Color(0xFF0D47A1)),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _phoneController,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(
+                    labelText: "Active Phone Number",
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.phone, color: Color(0xFF0D47A1)),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0D47A1),
+                    minimumSize: const Size.fromHeight(50),
+                  ),
+                  onPressed: _sendCode,
+                  child: const Text("Send SMS Code", style: TextStyle(color: Colors.white, fontSize: 16)),
+                ),
+              ] else ...[
+                TextField(
+                  controller: _otpController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: "Enter 6-Digit Verification Code",
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.lock, color: Colors.red),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade700,
+                    minimumSize: const Size.fromHeight(50),
+                  ),
+                  onPressed: _verifyCode,
+                  child: const Text("Verify & Complete Sign Up", style: TextStyle(color: Colors.white, fontSize: 16)),
+                ),
+              ],
+              const SizedBox(height: 12),
+              Text(_status, style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// MAIN ATTENDANCE SCREEN
 class AttendanceScreen extends StatefulWidget {
   final CameraDescription camera;
-  const AttendanceScreen({super.key, required this.camera});
+  final String userName;
+  final String userPhone;
+  final VoidCallback onLogout;
+
+  const AttendanceScreen({
+    super.key,
+    required this.camera,
+    required this.userName,
+    required this.userPhone,
+    required this.onLogout,
+  });
 
   @override
   State<AttendanceScreen> createState() => _AttendanceScreenState();
@@ -41,36 +246,61 @@ class AttendanceScreen extends StatefulWidget {
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
   late CameraController _controller;
-  final _nameController = TextEditingController();
   final _siteController = TextEditingController();
-  String _status = "Ready to record attendance";
+  String _status = "Ready";
   bool _isLoading = false;
+  
+  // Timers
+  Timer? _clockTimer;
+  Timer? _inactivityTimer;
+  String _currentTimeString = "";
 
   @override
   void initState() {
     super.initState();
-    _initSystem();
+    _initCamera();
+    _startClock();
+    _resetInactivityTimer();
   }
 
-  Future<void> _initSystem() async {
+  void _startClock() {
+    _clockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (mounted) {
+        setState(() {
+          _currentTimeString = DateFormat('hh:mm:ss a | EEE, MMM d').format(DateTime.now());
+        });
+      }
+    });
+  }
+
+  void _resetInactivityTimer() {
+    _inactivityTimer?.cancel();
+    _inactivityTimer = Timer(const Duration(minutes: 2), () {
+      if (mounted) {
+        widget.onLogout();
+      }
+    });
+  }
+
+  Future<void> _initCamera() async {
     await [Permission.camera, Permission.location].request();
     _controller = CameraController(widget.camera, ResolutionPreset.medium);
     await _controller.initialize();
     if (mounted) setState(() {});
   }
 
-  Future<void> _submitAttendance(String actionType) async {
-    final name = _nameController.text.trim();
+  Future<void> _submitAttendance(String actionType, bool isOvertime) async {
+    _resetInactivityTimer();
     final site = _siteController.text.trim();
 
-    if (name.isEmpty || site.isEmpty) {
-      setState(() => _status = "Error: Enter both Name and Site Name");
+    if (site.isEmpty) {
+      setState(() => _status = "Error: Please enter Site Name");
       return;
     }
 
     setState(() {
       _isLoading = true;
-      _status = "Capturing location & photo...";
+      _status = "Capturing location & selfie...";
     });
 
     try {
@@ -88,12 +318,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         Uri.parse("https://clemenguavis.pythonanywhere.com/api/attendance"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "employee_id": name,
+          "employee_id": widget.userName,
+          "phone_number": widget.userPhone,
           "site_name": site,
           "action_type": actionType,
+          "is_overtime": isOvertime,
           "latitude": pos.latitude,
           "longitude": pos.longitude,
-          "is_mock_location": pos.isMocked,
           "photo_base64": base64Image,
         }),
       );
@@ -114,83 +345,133 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   @override
   void dispose() {
     _controller.dispose();
-    _nameController.dispose();
     _siteController.dispose();
+    _clockTimer?.cancel();
+    _inactivityTimer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("SVTI Mobile Attendance"),
-        centerTitle: true,
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            Expanded(
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: _controller.value.isInitialized
-                    ? CameraPreview(_controller)
-                    : const Center(child: CircularProgressIndicator()),
-              ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _nameController,
-              decoration: const InputDecoration(
-                labelText: "Full Name",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.person),
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _siteController,
-              decoration: const InputDecoration(
-                labelText: "Site Name",
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.location_city),
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              _status,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.login, color: Colors.white),
-                    label: const Text("Time In", style: TextStyle(color: Colors.white, fontSize: 16)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                    ),
-                    onPressed: _isLoading ? null : () => _submitAttendance("Time In"),
-                  ),
+    return Listener(
+      onPointerDown: (_) => _resetInactivityTimer(),
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: Colors.black,
+          title: Row(
+            children: [
+              const Icon(Icons.shield, color: Colors.blueAccent),
+              const SizedBox(width: 8),
+              const Text("SVTI Attendance", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              const Spacer(),
+              IconButton(icon: const Icon(Icons.logout, color: Colors.redAccent), onPressed: widget.onLogout),
+            ],
+          ),
+        ),
+        body: Padding(
+          padding: const EdgeInsets.all(14.0),
+          child: Column(
+            children: [
+              // User info header
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0D47A1),
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    icon: const Icon(Icons.logout, color: Colors.white),
-                    label: const Text("Time Out", style: TextStyle(color: Colors.white, fontSize: 16)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
+                child: Row(
+                  children: [
+                    const Icon(Icons.account_circle, color: Colors.white, size: 28),
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(widget.userName, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                        Text(widget.userPhone, style: const TextStyle(color: Colors.white70, fontSize: 11)),
+                      ],
                     ),
-                    onPressed: _isLoading ? null : () => _submitAttendance("Time Out"),
-                  ),
+                    const Spacer(),
+                    const Icon(Icons.timer, color: Colors.redAccent, size: 16),
+                    const SizedBox(width: 4),
+                    const Text("Auto 2m", style: TextStyle(color: Colors.white70, fontSize: 10)),
+                  ],
                 ),
-              ],
-            ),
-          ],
+              ),
+              const SizedBox(height: 6),
+              // Real-Time Clock
+              Text(_currentTimeString, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+              const SizedBox(height: 8),
+              // Camera Preview
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: _controller.value.isInitialized
+                      ? CameraPreview(_controller)
+                      : const Center(child: CircularProgressIndicator()),
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: _siteController,
+                onChanged: (_) => _resetInactivityTimer(),
+                decoration: const InputDecoration(
+                  labelText: "Site Name",
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.location_city, color: Color(0xFF0D47A1)),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(_status, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.red), textAlign: TextAlign.center),
+              const SizedBox(height: 10),
+              
+              // Standard Time Buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.login, color: Colors.white, size: 18),
+                      label: const Text("Time In", style: TextStyle(color: Colors.white, fontSize: 14)),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700, padding: const EdgeInsets.symmetric(vertical: 12)),
+                      onPressed: _isLoading ? null : () => _submitAttendance("Time In", false),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.logout, color: Colors.white, size: 18),
+                      label: const Text("Time Out", style: TextStyle(color: Colors.white, fontSize: 14)),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700, padding: const EdgeInsets.symmetric(vertical: 12)),
+                      onPressed: _isLoading ? null : () => _submitAttendance("Time Out", false),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              
+              // Overtime Buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.add_alarm, color: Colors.white, size: 18),
+                      label: const Text("Overtime In", style: TextStyle(color: Colors.white, fontSize: 14)),
+                      style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0D47A1), padding: const EdgeInsets.symmetric(vertical: 12)),
+                      onPressed: _isLoading ? null : () => _submitAttendance("Overtime In", true),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.alarm_off, color: Colors.white, size: 18),
+                      label: const Text("Overtime Out", style: TextStyle(color: Colors.white, fontSize: 14)),
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.black87, padding: const EdgeInsets.symmetric(vertical: 12)),
+                      onPressed: _isLoading ? null : () => _submitAttendance("Overtime Out", true),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );
