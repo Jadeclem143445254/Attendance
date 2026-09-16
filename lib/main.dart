@@ -42,8 +42,8 @@ class AttendanceScreen extends StatefulWidget {
 class _AttendanceScreenState extends State<AttendanceScreen> {
   late CameraController _controller;
   final _nameController = TextEditingController();
-  String _status = "Initializing system...";
-  String _locationDisplay = "Acquiring real-time location...";
+  final _siteController = TextEditingController();
+  String _status = "Ready to record attendance";
   bool _isLoading = false;
 
   @override
@@ -56,32 +56,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     await [Permission.camera, Permission.location].request();
     _controller = CameraController(widget.camera, ResolutionPreset.medium);
     await _controller.initialize();
-
-    // Fetch initial real-time location preview
-    try {
-      Position pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      if (mounted) {
-        setState(() {
-          _locationDisplay = "Current Location: ${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}";
-          _status = "Ready to record attendance";
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() => _locationDisplay = "GPS active (fetching...)");
-    }
+    if (mounted) setState(() {});
   }
 
   Future<void> _submitAttendance(String actionType) async {
-    if (_nameController.text.trim().isEmpty) {
-      setState(() => _status = "Error: Please enter your Name");
+    final name = _nameController.text.trim();
+    final site = _siteController.text.trim();
+
+    if (name.isEmpty || site.isEmpty) {
+      setState(() => _status = "Error: Enter both Name and Site Name");
       return;
     }
 
     setState(() {
       _isLoading = true;
-      _status = "Capturing selfie & real-time GPS...";
+      _status = "Capturing location & photo...";
     });
 
     try {
@@ -89,21 +78,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         desiredAccuracy: LocationAccuracy.high,
       );
 
-      setState(() {
-        _locationDisplay = "Captured Location: ${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)}";
-      });
-
       XFile photo = await _controller.takePicture();
       List<int> imageBytes = await File(photo.path).readAsBytes();
       String base64Image = base64Encode(imageBytes);
 
-      setState(() => _status = "Transmitting record...");
+      setState(() => _status = "Transmitting to server...");
 
       final response = await http.post(
         Uri.parse("https://clemenguavis.pythonanywhere.com/api/attendance"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "employee_id": _nameController.text.trim(),
+          "employee_id": name,
+          "site_name": site,
           "action_type": actionType,
           "latitude": pos.latitude,
           "longitude": pos.longitude,
@@ -116,10 +102,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (response.statusCode == 200) {
         setState(() => _status = "SUCCESS: ${data['message']}");
       } else {
-        setState(() => _status = "REJECTED: ${data['error']}");
+        setState(() => _status = "FAILED: ${data['error']}");
       }
     } catch (e) {
-      setState(() => _status = "Connection error: ${e.toString()}");
+      setState(() => _status = "Error: ${e.toString()}");
     } finally {
       setState(() => _isLoading = false);
     }
@@ -129,6 +115,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void dispose() {
     _controller.dispose();
     _nameController.dispose();
+    _siteController.dispose();
     super.dispose();
   }
 
@@ -151,26 +138,22 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     : const Center(child: CircularProgressIndicator()),
               ),
             ),
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.blue.shade50,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                _locationDisplay,
-                style: const TextStyle(fontSize: 12, color: Colors.blueAccent, fontWeight: FontWeight.w600),
-              ),
-            ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             TextField(
               controller: _nameController,
               decoration: const InputDecoration(
                 labelText: "Full Name",
-                hintText: "Enter employee name",
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.person),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _siteController,
+              decoration: const InputDecoration(
+                labelText: "Site Name",
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.location_city),
               ),
             ),
             const SizedBox(height: 10),
