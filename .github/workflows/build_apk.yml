@@ -33,8 +33,13 @@ jobs:
       - name: Repair Android Gradle Project
         run: flutter create --platforms=android --project-name=attendance .
 
+      - name: Upgrade Kotlin Version
+        run: |
+          find android/ -type f \( -name "build.gradle" -o -name "settings.gradle" -o -name "build.gradle.kts" \) -exec sed -i 's/1\.7\.1/1.9.22/g' {} +
+          find android/ -type f \( -name "build.gradle" -o -name "settings.gradle" -o -name "build.gradle.kts" \) -exec sed -i 's/1\.8\.[0-9]*/1.9.22/g' {} +
+
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
