@@ -29,7 +29,7 @@ class SVTIApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'SVTI Attendance',
       theme: ThemeData(
-        primaryColor: const Color(0xFF0D47A1), // Deep Blue
+        primaryColor: const Color(0xFF0D47A1),
         scaffoldBackgroundColor: const Color(0xFFF5F5F5),
       ),
       home: AuthWrapper(camera: camera),
@@ -118,7 +118,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _phoneController = TextEditingController();
   final _otpController = TextEditingController();
   bool _codeSent = false;
-  String _simulatedOtp = "123456";
+  final String _simulatedOtp = "123456";
   String _status = "";
 
   void _sendCode() {
@@ -149,7 +149,6 @@ class _SignUpScreenState extends State<SignUpScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Branding Header
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -250,7 +249,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String _status = "Ready";
   bool _isLoading = false;
   
-  // Timers
   Timer? _clockTimer;
   Timer? _inactivityTimer;
   String _currentTimeString = "";
@@ -329,14 +327,24 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         }),
       );
 
-      final data = jsonDecode(response.body);
+      // SAFE RESPONSE PARSING FIX
       if (response.statusCode == 200) {
-        setState(() => _status = "SUCCESS: ${data['message']}");
+        try {
+          final data = jsonDecode(response.body);
+          setState(() => _status = "SUCCESS: ${data['message']}");
+        } catch (_) {
+          setState(() => _status = "SUCCESS: Attendance recorded");
+        }
       } else {
-        setState(() => _status = "FAILED: ${data['error']}");
+        try {
+          final data = jsonDecode(response.body);
+          setState(() => _status = "FAILED: ${data['error'] ?? 'Server Error'}");
+        } catch (_) {
+          setState(() => _status = "Server Error (${response.statusCode}): Check PythonAnywhere script");
+        }
       }
     } catch (e) {
-      setState(() => _status = "Error: ${e.toString()}");
+      setState(() => _status = "Connection Error: ${e.toString()}");
     } finally {
       setState(() => _isLoading = false);
     }
@@ -372,7 +380,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           padding: const EdgeInsets.all(14.0),
           child: Column(
             children: [
-              // User info header
               Container(
                 padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
                 decoration: BoxDecoration(
@@ -398,10 +405,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ),
               ),
               const SizedBox(height: 6),
-              // Real-Time Clock
               Text(_currentTimeString, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
               const SizedBox(height: 8),
-              // Camera Preview
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
@@ -421,10 +426,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ),
               ),
               const SizedBox(height: 6),
-              Text(_status, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.red), textAlign: TextAlign.center),
+              Text(
+                _status,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                  color: _status.startsWith("SUCCESS") ? Colors.green.shade800 : Colors.red.shade800,
+                ),
+                textAlign: TextAlign.center,
+              ),
               const SizedBox(height: 10),
-              
-              // Standard Time Buttons
               Row(
                 children: [
                   Expanded(
@@ -447,8 +458,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ],
               ),
               const SizedBox(height: 8),
-              
-              // Overtime Buttons
               Row(
                 children: [
                   Expanded(
