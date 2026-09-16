@@ -153,7 +153,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final password = _passwordController.text.trim();
 
     if (name.isEmpty || phone.isEmpty || password.length < 4) {
-      setState(() => _status = "Please complete all fields (Min 4 digit password)");
+      setState(() => _status = "Complete all fields (Password min 4 chars)");
       return;
     }
 
@@ -187,19 +187,18 @@ class _RegisterScreenState extends State<RegisterScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const SizedBox(height: 20),
-              // SVTI LOGO DISPLAY
+              const SizedBox(height: 30),
               Image.asset(
                 'assets/svti_logo.png',
-                height: 70,
+                height: 80,
                 errorBuilder: (context, error, stackTrace) => const Text(
                   "SVTI",
-                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.black),
+                  style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold),
                 ),
               ),
               const SizedBox(height: 8),
               const Text("Systems Variable Technicom Inc.", style: TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: 24),
+              const SizedBox(height: 32),
               const Text("One-Time Registration", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 16),
               TextField(
@@ -230,7 +229,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   prefixIcon: Icon(Icons.lock, color: Colors.red),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 20),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF0D47A1),
@@ -272,7 +271,6 @@ class PasswordLoginScreen extends StatefulWidget {
 
 class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
   final _passwordController = TextEditingController();
-  bool _isLoading = false;
   String _status = "";
 
   Future<void> _verifyPassword() async {
@@ -297,12 +295,13 @@ class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              const Spacer(),
               Image.asset(
                 'assets/svti_logo.png',
-                height: 70,
+                height: 80,
                 errorBuilder: (context, error, stackTrace) => const Text(
                   "SVTI",
-                  style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: Colors.black),
+                  style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold),
                 ),
               ),
               const SizedBox(height: 16),
@@ -313,7 +312,7 @@ class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
                 controller: _passwordController,
                 obscureText: true,
                 decoration: const InputDecoration(
-                  labelText: "Enter Password to Login",
+                  labelText: "Enter Password",
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.lock, color: Colors.blueAccent),
                 ),
@@ -324,7 +323,7 @@ class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
                   backgroundColor: const Color(0xFF0D47A1),
                   minimumSize: const Size.fromHeight(50),
                 ),
-                onPressed: _isLoading ? null : _verifyPassword,
+                onPressed: _verifyPassword,
                 child: const Text("Login", style: TextStyle(color: Colors.white, fontSize: 16)),
               ),
               const SizedBox(height: 12),
@@ -342,7 +341,7 @@ class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
   }
 }
 
-// MAIN ATTENDANCE SCREEN WITH 24-HR LOCAL TIME & SVTI LOGO
+// MAIN ATTENDANCE SCREEN WITH 24-HOUR LOCAL CLOCK
 class AttendanceScreen extends StatefulWidget {
   final CameraDescription camera;
   final String userName;
@@ -375,12 +374,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void initState() {
     super.initState();
     _initCamera();
-    _startClock24Hr();
+    _start24HourClock();
     _resetInactivityTimer();
   }
 
-  // 24-HOUR LOCAL STANDARD TIME FORMAT
-  void _startClock24Hr() {
+  // Live local 24-hour time clock (HH:mm:ss | EEE, MMM d)
+  void _start24HourClock() {
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
@@ -465,7 +464,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       XFile? photo = await _safeTakePicture();
 
       if (photo == null) {
-        setState(() => _status = "Camera busy. Please try again.");
+        setState(() => _status = "Camera busy. Please tap again.");
         return;
       }
 
@@ -505,7 +504,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           "latitude": pos.latitude,
           "longitude": pos.longitude,
           "photo_base64": base64Image,
-          "local_timestamp": _currentTimeString,
+          "local_time_24h": _currentTimeString,
         }),
       );
 
@@ -552,7 +551,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             children: [
               Image.asset(
                 'assets/svti_logo.png',
-                height: 32,
+                height: 30,
                 errorBuilder: (context, error, stackTrace) => const Text(
                   "SVTI",
                   style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
