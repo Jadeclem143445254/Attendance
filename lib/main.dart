@@ -35,8 +35,8 @@ class AttendanceHomeScreen extends StatefulWidget {
 }
 
 class _AttendanceHomeScreenState extends State<AttendanceHomeScreen> {
-  // Update this to your running backend server IP or URL
-  final String serverUrl = "https://your-flask-server.com/api/attendance";
+  // Correct live backend URL
+  final String serverUrl = "https://clemenguavis.pythonanywhere.com/api/attendance";
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
