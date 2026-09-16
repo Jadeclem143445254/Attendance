@@ -132,7 +132,6 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    // Directly log in and proceed
     widget.onLoginSuccess(name, phone);
   }
 
@@ -253,7 +252,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          // Live display matching user's phone local time
           _currentTimeString = DateFormat('hh:mm:ss a | EEE, MMM d').format(DateTime.now());
         });
       }
@@ -287,7 +285,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  // Safe camera capture helper with channel auto-recovery
   Future<XFile?> _safeTakePicture() async {
     if (_controller == null || !_controller!.value.isInitialized) {
       await _initCamera();
@@ -304,7 +301,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     try {
       return await _controller!.takePicture();
     } catch (e) {
-      // Auto-reinitialize on channel error and retry
       await _initCamera();
       if (_controller != null && _controller!.value.isInitialized) {
         try {
@@ -334,11 +330,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     });
 
     try {
-      // 1. Get standard local timestamp from phone time
+      // 1. Get exact local phone time
       final nowLocal = DateTime.now();
       final localTimestamp = DateFormat('yyyy-MM-dd HH:mm:ss').format(nowLocal);
 
-      // 2. Take picture FIRST
+      // 2. Take picture FIRST before GPS delay
       XFile? photo = await _safeTakePicture();
 
       if (photo == null) {
@@ -369,7 +365,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         );
       });
 
-      // 4. Send to Server with phone's local timestamp
+      // 4. Send to Server
       setState(() => _status = "Transmitting to server...");
 
       final response = await http.post(
@@ -381,7 +377,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           "site_name": site,
           "action_type": actionType,
           "is_overtime": isOvertime,
-          "timestamp": localTimestamp, // Exact local phone time
+          "timestamp": localTimestamp,
           "latitude": pos.latitude,
           "longitude": pos.longitude,
           "photo_base64": base64Image,
