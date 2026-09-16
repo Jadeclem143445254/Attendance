@@ -2,60 +2,35 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ main, master ]
-  workflow_dispatch:
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'zulu'
-        java-version: '17'
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
 
-    - name: Set up Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        channel: 'stable'
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
 
-    - name: Build Flutter App
-      run: |
-        flutter create my_app --platforms=android --org=com.svti.attendance
-        cp pubspec.yaml my_app/pubspec.yaml
-        cp lib/main.dart my_app/lib/main.dart
-        
-        cd my_app
-        sed -i 's/minSdkVersion.*/minSdkVersion 21/g' android/app/build.gradle || true
-        sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle || true
-        sed -i 's/minSdk = .*/minSdk = 21/g' android/app/build.gradle || true
+      - name: Get Dependencies
+        run: flutter pub get
 
-        python3 -c "
-        manifest_path = 'android/app/src/main/AndroidManifest.xml'
-        with open(manifest_path, 'r') as f:
-            content = f.read()
-        perms = '''
-            <uses-permission android:name=\"android.permission.CAMERA\"/>
-            <uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\"/>
-            <uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\"/>
-            <uses-permission android:name=\"android.permission.INTERNET\"/>
-        '''
-        if '<application' in content:
-            content = content.replace('<application', perms + '\n    <application')
-            with open(manifest_path, 'w') as f:
-                f.write(content)
-        "
+      - name: Build APK
+        run: flutter build apk --release
 
-        flutter pub get
-        flutter build apk --release --no-tree-shake-icons
-
-    - name: Upload APK Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: svti-attendance-app-release
-        path: my_app/build/app/outputs/flutter-apk/app-release.apk
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
