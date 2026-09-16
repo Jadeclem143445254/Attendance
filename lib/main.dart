@@ -104,7 +104,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
   }
 }
 
-// SIGN UP / PHONE AUTH SCREEN WITH REAL SMS INTEGRATION
+// SIGN UP / PHONE AUTH SCREEN
 class SignUpScreen extends StatefulWidget {
   final Function(String name, String phone) onLoginSuccess;
   const SignUpScreen({super.key, required this.onLoginSuccess});
@@ -283,7 +283,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   }
 }
 
-// MAIN ATTENDANCE SCREEN
+// MAIN ATTENDANCE SCREEN WITH AUTO-RECOVERING CAMERA
 class AttendanceScreen extends StatefulWidget {
   final CameraDescription camera;
   final String userName;
@@ -303,7 +303,7 @@ class AttendanceScreen extends StatefulWidget {
 }
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
-  late CameraController _controller;
+  CameraController? _controller;
   final _siteController = TextEditingController();
   String _status = "Ready";
   bool _isLoading = false;
@@ -341,9 +341,50 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   Future<void> _initCamera() async {
     await [Permission.camera, Permission.location].request();
-    _controller = CameraController(widget.camera, ResolutionPreset.medium);
-    await _controller.initialize();
-    if (mounted) setState(() {});
+    final newController = CameraController(widget.camera, ResolutionPreset.medium, enableAudio: false);
+    
+    try {
+      await newController.initialize();
+      if (mounted) {
+        setState(() {
+          _controller = newController;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _status = "Camera Error: ${e.toString()}");
+      }
+    }
+  }
+
+  // Safe camera capture helper with channel auto-recovery
+  Future<XFile?> _safeTakePicture() async {
+    if (_controller == null || !_controller!.value.isInitialized) {
+      await _initCamera();
+    }
+
+    if (_controller == null || !_controller!.value.isInitialized) {
+      return null;
+    }
+
+    if (_controller!.value.isTakingPicture) {
+      return null;
+    }
+
+    try {
+      return await _controller!.takePicture();
+    } catch (e) {
+      // If channel lost connection, re-initialize camera and retry once
+      await _initCamera();
+      if (_controller != null && _controller!.value.isInitialized) {
+        try {
+          return await _controller!.takePicture();
+        } catch (_) {
+          return null;
+        }
+      }
+      return null;
+    }
   }
 
   Future<void> _submitAttendance(String actionType, bool isOvertime) async {
@@ -355,20 +396,46 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       return;
     }
 
+    if (_isLoading) return;
+
     setState(() {
       _isLoading = true;
-      _status = "Capturing location & selfie...";
+      _status = "Capturing photo...";
     });
 
     try {
-      Position pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
+      // 1. Take picture FIRST before GPS delay
+      XFile? photo = await _safeTakePicture();
 
-      XFile photo = await _controller.takePicture();
+      if (photo == null) {
+        setState(() => _status = "Camera Busy or Disconnected. Please tap again.");
+        return;
+      }
+
       List<int> imageBytes = await File(photo.path).readAsBytes();
       String base64Image = base64Encode(imageBytes);
 
+      // 2. Fetch GPS Location
+      setState(() => _status = "Getting GPS location...");
+      Position pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
+      ).catchError((_) async {
+        return await Geolocator.getLastKnownPosition() ?? Position(
+          latitude: 0.0,
+          longitude: 0.0,
+          timestamp: DateTime.now(),
+          accuracy: 0.0,
+          altitude: 0.0,
+          heading: 0.0,
+          speed: 0.0,
+          speedAccuracy: 0.0,
+          altitudeAccuracy: 0.0,
+          headingAccuracy: 0.0,
+        );
+      });
+
+      // 3. Send to Server
       setState(() => _status = "Transmitting to server...");
 
       final response = await http.post(
@@ -398,7 +465,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           final data = jsonDecode(response.body);
           setState(() => _status = "FAILED: ${data['error'] ?? 'Server Error'}");
         } catch (_) {
-          setState(() => _status = "Server Error (${response.statusCode}): Check PythonAnywhere script");
+          setState(() => _status = "Server Error (${response.statusCode})");
         }
       }
     } catch (e) {
@@ -410,7 +477,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   @override
   void dispose() {
-    _controller.dispose();
+    _controller?.dispose();
     _siteController.dispose();
     _clockTimer?.cancel();
     _inactivityTimer?.cancel();
@@ -468,8 +535,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               Expanded(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: _controller.value.isInitialized
-                      ? CameraPreview(_controller)
+                  child: (_controller != null && _controller!.value.isInitialized)
+                      ? CameraPreview(_controller!)
                       : const Center(child: CircularProgressIndicator()),
                 ),
               ),
