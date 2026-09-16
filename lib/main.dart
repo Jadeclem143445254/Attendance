@@ -46,7 +46,6 @@ class AuthWrapper extends StatefulWidget {
 }
 
 class _AuthWrapperState extends State<AuthWrapper> {
-  bool _isRegistered = false;
   bool _isLoggedIn = false;
   String _userName = "";
   String _userPhone = "";
@@ -55,48 +54,34 @@ class _AuthWrapperState extends State<AuthWrapper> {
   @override
   void initState() {
     super.initState();
-    _checkAuthState();
+    _checkSession();
   }
 
-  Future<void> _checkAuthState() async {
+  Future<void> _checkSession() async {
     final prefs = await SharedPreferences.getInstance();
     setState(() {
-      _isRegistered = prefs.getBool('isRegistered') ?? false;
-      _isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
       _userName = prefs.getString('userName') ?? "";
       _userPhone = prefs.getString('userPhone') ?? "";
+      _isLoggedIn = _userName.isNotEmpty && _userPhone.isNotEmpty;
       _isLoading = false;
     });
   }
 
-  void _onRegistered(String name, String phone) {
+  void _onLoginSuccess(String name, String phone) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('userName', name);
+    await prefs.setString('userPhone', phone);
     setState(() {
-      _isRegistered = true;
-      _isLoggedIn = true;
       _userName = name;
       _userPhone = phone;
-    });
-  }
-
-  void _onLoginSuccess() {
-    setState(() {
       _isLoggedIn = true;
     });
   }
 
   void _onLogout() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('isLoggedIn', false);
-    setState(() {
-      _isLoggedIn = false;
-    });
-  }
-
-  void _resetRegistration() async {
-    final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
     setState(() {
-      _isRegistered = false;
       _isLoggedIn = false;
       _userName = "";
       _userPhone = "";
@@ -108,182 +93,54 @@ class _AuthWrapperState extends State<AuthWrapper> {
     if (_isLoading) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
-
-    if (!_isRegistered) {
-      return RegisterScreen(onRegistered: _onRegistered);
-    }
-
-    if (!_isLoggedIn) {
-      return PasswordLoginScreen(
-        userName: _userName,
-        userPhone: _userPhone,
-        onLoginSuccess: _onLoginSuccess,
-        onResetAccount: _resetRegistration,
-      );
-    }
-
-    return AttendanceScreen(
-      camera: widget.camera,
-      userName: _userName,
-      userPhone: _userPhone,
-      onLogout: _onLogout,
-    );
+    return _isLoggedIn
+        ? AttendanceScreen(
+            camera: widget.camera,
+            userName: _userName,
+            userPhone: _userPhone,
+            onLogout: _onLogout,
+          )
+        : LoginScreen(onLoginSuccess: _onLoginSuccess);
   }
 }
 
-// ONE-TIME REGISTRATION SCREEN
-class RegisterScreen extends StatefulWidget {
-  final Function(String name, String phone) onRegistered;
-  const RegisterScreen({super.key, required this.onRegistered});
+// SIMPLIFIED DIRECT LOGIN SCREEN
+class LoginScreen extends StatefulWidget {
+  final Function(String name, String phone) onLoginSuccess;
+  const LoginScreen({super.key, required this.onLoginSuccess});
 
   @override
-  State<RegisterScreen> createState() => _RegisterScreenState();
+  State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _RegisterScreenState extends State<RegisterScreen> {
+class _LoginScreenState extends State<LoginScreen> {
   final _nameController = TextEditingController();
   final _phoneController = TextEditingController();
-  final _passwordController = TextEditingController();
-  bool _isLoading = false;
   String _status = "";
 
-  Future<void> _handleRegister() async {
+  void _handleLogin() {
     final name = _nameController.text.trim();
     final phone = _phoneController.text.trim();
-    final password = _passwordController.text.trim();
 
-    if (name.isEmpty || phone.isEmpty || password.length < 4) {
-      setState(() => _status = "Complete all fields (Password min 4 chars)");
+    if (name.isEmpty) {
+      setState(() => _status = "Please enter your Full Name");
       return;
     }
 
-    setState(() {
-      _isLoading = true;
-      _status = "Registering account...";
-    });
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool('isRegistered', true);
-      await prefs.setBool('isLoggedIn', true);
-      await prefs.setString('userName', name);
-      await prefs.setString('userPhone', phone);
-      await prefs.setString('userPassword', password);
-
-      widget.onRegistered(name, phone);
-    } catch (e) {
-      setState(() => _status = "Registration Error: ${e.toString()}");
-    } finally {
-      setState(() => _isLoading = false);
+    if (phone.isEmpty || phone.length < 7) {
+      setState(() => _status = "Please enter a valid Phone Number");
+      return;
     }
+
+    // Directly log in and proceed
+    widget.onLoginSuccess(name, phone);
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const SizedBox(height: 30),
-              Image.asset(
-                'assets/svti_logo.png',
-                height: 80,
-                errorBuilder: (context, error, stackTrace) => const Text(
-                  "SVTI",
-                  style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold),
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Text("Systems Variable Technicom Inc.", style: TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: 32),
-              const Text("One-Time Registration", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _nameController,
-                decoration: const InputDecoration(
-                  labelText: "Full Name",
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.person, color: Color(0xFF0D47A1)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _phoneController,
-                keyboardType: TextInputType.phone,
-                decoration: const InputDecoration(
-                  labelText: "Phone Number",
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.phone, color: Color(0xFF0D47A1)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: "Set Password",
-                  border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.lock, color: Colors.red),
-                ),
-              ),
-              const SizedBox(height: 20),
-              ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF0D47A1),
-                  minimumSize: const Size.fromHeight(50),
-                ),
-                onPressed: _isLoading ? null : _handleRegister,
-                child: _isLoading
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text("Register Account", style: TextStyle(color: Colors.white, fontSize: 16)),
-              ),
-              const SizedBox(height: 12),
-              Text(_status, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// PASSWORD ONLY LOGIN SCREEN
-class PasswordLoginScreen extends StatefulWidget {
-  final String userName;
-  final String userPhone;
-  final VoidCallback onLoginSuccess;
-  final VoidCallback onResetAccount;
-
-  const PasswordLoginScreen({
-    super.key,
-    required this.userName,
-    required this.userPhone,
-    required this.onLoginSuccess,
-    required this.onResetAccount,
-  });
-
-  @override
-  State<PasswordLoginScreen> createState() => _PasswordLoginScreenState();
-}
-
-class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
-  final _passwordController = TextEditingController();
-  String _status = "";
-
-  Future<void> _verifyPassword() async {
-    final password = _passwordController.text.trim();
-    final prefs = await SharedPreferences.getInstance();
-    final savedPassword = prefs.getString('userPassword') ?? "";
-
-    if (password == savedPassword) {
-      await prefs.setBool('isLoggedIn', true);
-      widget.onLoginSuccess();
-    } else {
-      setState(() => _status = "Incorrect Password. Try again.");
-    }
+  void dispose() {
+    _nameController.dispose();
+    _phoneController.dispose();
+    super.dispose();
   }
 
   @override
@@ -295,44 +152,58 @@ class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Spacer(),
-              Image.asset(
-                'assets/svti_logo.png',
-                height: 80,
-                errorBuilder: (context, error, stackTrace) => const Text(
-                  "SVTI",
-                  style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.black,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.red.shade700, width: 2),
+                ),
+                child: const Column(
+                  children: [
+                    Icon(Icons.shield, size: 50, color: Colors.blueAccent),
+                    SizedBox(height: 6),
+                    Text("SVTI MOBILE", style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                    Text("Attendance Login", style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+                  ],
                 ),
               ),
-              const SizedBox(height: 16),
-              Text("Welcome back, ${widget.userName}", style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-              Text(widget.userPhone, style: const TextStyle(color: Colors.grey, fontSize: 13)),
-              const SizedBox(height: 24),
+              const SizedBox(height: 28),
               TextField(
-                controller: _passwordController,
-                obscureText: true,
+                controller: _nameController,
+                textCapitalization: TextCapitalization.words,
                 decoration: const InputDecoration(
-                  labelText: "Enter Password",
+                  labelText: "Full Name",
+                  hintText: "e.g. Clemen Guavis",
                   border: OutlineInputBorder(),
-                  prefixIcon: Icon(Icons.lock, color: Colors.blueAccent),
+                  prefixIcon: Icon(Icons.person, color: Color(0xFF0D47A1)),
                 ),
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 14),
+              TextField(
+                controller: _phoneController,
+                keyboardType: TextInputType.phone,
+                decoration: const InputDecoration(
+                  labelText: "Phone Number",
+                  hintText: "e.g. 09277026061",
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.phone, color: Color(0xFF0D47A1)),
+                ),
+              ),
+              const SizedBox(height: 20),
               ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF0D47A1),
                   minimumSize: const Size.fromHeight(50),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                 ),
-                onPressed: _verifyPassword,
-                child: const Text("Login", style: TextStyle(color: Colors.white, fontSize: 16)),
+                onPressed: _handleLogin,
+                child: const Text("Log In", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
               ),
-              const SizedBox(height: 12),
-              Text(_status, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
-              const Spacer(),
-              TextButton(
-                onPressed: widget.onResetAccount,
-                child: const Text("Register as a different user?", style: TextStyle(color: Colors.grey)),
-              ),
+              if (_status.isNotEmpty) ...[
+                const SizedBox(height: 14),
+                Text(_status, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+              ],
             ],
           ),
         ),
@@ -341,7 +212,7 @@ class _PasswordLoginScreenState extends State<PasswordLoginScreen> {
   }
 }
 
-// MAIN ATTENDANCE SCREEN WITH 24-HOUR LOCAL CLOCK
+// MAIN ATTENDANCE SCREEN
 class AttendanceScreen extends StatefulWidget {
   final CameraDescription camera;
   final String userName;
@@ -374,16 +245,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   void initState() {
     super.initState();
     _initCamera();
-    _start24HourClock();
+    _startClock();
     _resetInactivityTimer();
   }
 
-  // Live local 24-hour time clock (HH:mm:ss | EEE, MMM d)
-  void _start24HourClock() {
+  void _startClock() {
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          _currentTimeString = DateFormat('HH:mm:ss | EEE, MMM d').format(DateTime.now());
+          // Live display matching user's phone local time
+          _currentTimeString = DateFormat('hh:mm:ss a | EEE, MMM d').format(DateTime.now());
         });
       }
     });
@@ -416,6 +287,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
+  // Safe camera capture helper with channel auto-recovery
   Future<XFile?> _safeTakePicture() async {
     if (_controller == null || !_controller!.value.isInitialized) {
       await _initCamera();
@@ -432,6 +304,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     try {
       return await _controller!.takePicture();
     } catch (e) {
+      // Auto-reinitialize on channel error and retry
       await _initCamera();
       if (_controller != null && _controller!.value.isInitialized) {
         try {
@@ -461,17 +334,23 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     });
 
     try {
+      // 1. Get standard local timestamp from phone time
+      final nowLocal = DateTime.now();
+      final localTimestamp = DateFormat('yyyy-MM-dd HH:mm:ss').format(nowLocal);
+
+      // 2. Take picture FIRST
       XFile? photo = await _safeTakePicture();
 
       if (photo == null) {
-        setState(() => _status = "Camera busy. Please tap again.");
+        setState(() => _status = "Camera Busy or Disconnected. Please tap again.");
         return;
       }
 
       List<int> imageBytes = await File(photo.path).readAsBytes();
       String base64Image = base64Encode(imageBytes);
 
-      setState(() => _status = "Getting location...");
+      // 3. Fetch GPS Location
+      setState(() => _status = "Getting GPS location...");
       Position pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
         timeLimit: const Duration(seconds: 10),
@@ -490,7 +369,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         );
       });
 
-      setState(() => _status = "Transmitting...");
+      // 4. Send to Server with phone's local timestamp
+      setState(() => _status = "Transmitting to server...");
 
       final response = await http.post(
         Uri.parse("https://clemenguavis.pythonanywhere.com/api/attendance"),
@@ -501,10 +381,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           "site_name": site,
           "action_type": actionType,
           "is_overtime": isOvertime,
+          "timestamp": localTimestamp, // Exact local phone time
           "latitude": pos.latitude,
           "longitude": pos.longitude,
           "photo_base64": base64Image,
-          "local_time_24h": _currentTimeString,
         }),
       );
 
@@ -513,7 +393,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           final data = jsonDecode(response.body);
           setState(() => _status = "SUCCESS: ${data['message']}");
         } catch (_) {
-          setState(() => _status = "SUCCESS: Attendance recorded");
+          setState(() => _status = "SUCCESS: Recorded at $localTimestamp");
         }
       } else {
         try {
@@ -545,25 +425,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       onPointerDown: (_) => _resetInactivityTimer(),
       child: Scaffold(
         appBar: AppBar(
-          backgroundColor: Colors.white,
-          elevation: 1,
+          backgroundColor: Colors.black,
           title: Row(
             children: [
-              Image.asset(
-                'assets/svti_logo.png',
-                height: 30,
-                errorBuilder: (context, error, stackTrace) => const Text(
-                  "SVTI",
-                  style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
-                ),
-              ),
+              const Icon(Icons.shield, color: Colors.blueAccent),
               const SizedBox(width: 8),
-              const Text("Attendance", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold, fontSize: 16)),
+              const Text("SVTI Attendance", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               const Spacer(),
-              IconButton(
-                icon: const Icon(Icons.logout, color: Colors.redAccent),
-                onPressed: widget.onLogout,
-              ),
+              IconButton(icon: const Icon(Icons.logout, color: Colors.redAccent), onPressed: widget.onLogout),
             ],
           ),
         ),
@@ -595,12 +464,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 8),
-              // 24-HOUR LOCAL TIME DISPLAY
-              Text(
-                _currentTimeString,
-                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.black87),
-              ),
+              const SizedBox(height: 6),
+              Text(_currentTimeString, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
               const SizedBox(height: 8),
               Expanded(
                 child: ClipRRect(
