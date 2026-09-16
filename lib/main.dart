@@ -104,7 +104,7 @@ class _AuthWrapperState extends State<AuthWrapper> {
   }
 }
 
-// SIGN UP / PHONE AUTH SCREEN
+// SIGN UP / PHONE AUTH SCREEN WITH REAL SMS INTEGRATION
 class SignUpScreen extends StatefulWidget {
   final Function(String name, String phone) onLoginSuccess;
   const SignUpScreen({super.key, required this.onLoginSuccess});
@@ -117,26 +117,81 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _nameController = TextEditingController();
   final _phoneController = TextEditingController();
   final _otpController = TextEditingController();
+
   bool _codeSent = false;
-  final String _simulatedOtp = "123456";
+  bool _isLoading = false;
   String _status = "";
 
-  void _sendCode() {
-    if (_nameController.text.trim().isEmpty || _phoneController.text.trim().length < 10) {
+  Future<void> _sendCode() async {
+    final name = _nameController.text.trim();
+    final phone = _phoneController.text.trim();
+
+    if (name.isEmpty || phone.length < 10) {
       setState(() => _status = "Please enter full name & valid phone number");
       return;
     }
+
     setState(() {
-      _codeSent = true;
-      _status = "Verification code sent! (Use code: $_simulatedOtp)";
+      _isLoading = true;
+      _status = "Sending SMS code to $phone...";
     });
+
+    try {
+      final res = await http.post(
+        Uri.parse("https://clemenguavis.pythonanywhere.com/api/send-otp"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"phone_number": phone}),
+      );
+
+      final data = jsonDecode(res.body);
+
+      if (res.statusCode == 200 && data['status'] == 'success') {
+        setState(() {
+          _codeSent = true;
+          _status = "SMS code dispatched! Enter code below.";
+        });
+      } else {
+        setState(() => _status = data['message'] ?? "Failed to send SMS code");
+      }
+    } catch (e) {
+      setState(() => _status = "Connection Error: ${e.toString()}");
+    } finally {
+      setState(() => _isLoading = false);
+    }
   }
 
-  void _verifyCode() {
-    if (_otpController.text.trim() == _simulatedOtp) {
-      widget.onLoginSuccess(_nameController.text.trim(), _phoneController.text.trim());
-    } else {
-      setState(() => _status = "Invalid verification code. Try again.");
+  Future<void> _verifyCode() async {
+    final phone = _phoneController.text.trim();
+    final otp = _otpController.text.trim();
+
+    if (otp.length < 6) {
+      setState(() => _status = "Please enter the 6-digit code");
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _status = "Verifying code...";
+    });
+
+    try {
+      final res = await http.post(
+        Uri.parse("https://clemenguavis.pythonanywhere.com/api/verify-otp"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({"phone_number": phone, "otp": otp}),
+      );
+
+      final data = jsonDecode(res.body);
+
+      if (res.statusCode == 200 && data['status'] == 'success') {
+        widget.onLoginSuccess(_nameController.text.trim(), phone);
+      } else {
+        setState(() => _status = data['message'] ?? "Invalid verification code");
+      }
+    } catch (e) {
+      setState(() => _status = "Connection Error: ${e.toString()}");
+    } finally {
+      setState(() => _isLoading = false);
     }
   }
 
@@ -180,7 +235,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                   controller: _phoneController,
                   keyboardType: TextInputType.phone,
                   decoration: const InputDecoration(
-                    labelText: "Active Phone Number",
+                    labelText: "Active Phone Number (e.g. 09171234567)",
                     border: OutlineInputBorder(),
                     prefixIcon: Icon(Icons.phone, color: Color(0xFF0D47A1)),
                   ),
@@ -191,15 +246,17 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     backgroundColor: const Color(0xFF0D47A1),
                     minimumSize: const Size.fromHeight(50),
                   ),
-                  onPressed: _sendCode,
-                  child: const Text("Send SMS Code", style: TextStyle(color: Colors.white, fontSize: 16)),
+                  onPressed: _isLoading ? null : _sendCode,
+                  child: _isLoading
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text("Send SMS Code", style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
               ] else ...[
                 TextField(
                   controller: _otpController,
                   keyboardType: TextInputType.number,
                   decoration: const InputDecoration(
-                    labelText: "Enter 6-Digit Verification Code",
+                    labelText: "Enter 6-Digit SMS Verification Code",
                     border: OutlineInputBorder(),
                     prefixIcon: Icon(Icons.lock, color: Colors.red),
                   ),
@@ -210,8 +267,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     backgroundColor: Colors.red.shade700,
                     minimumSize: const Size.fromHeight(50),
                   ),
-                  onPressed: _verifyCode,
-                  child: const Text("Verify & Complete Sign Up", style: TextStyle(color: Colors.white, fontSize: 16)),
+                  onPressed: _isLoading ? null : _verifyCode,
+                  child: _isLoading
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text("Verify & Complete Sign Up", style: TextStyle(color: Colors.white, fontSize: 16)),
                 ),
               ],
               const SizedBox(height: 12),
@@ -327,7 +386,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         }),
       );
 
-      // SAFE RESPONSE PARSING FIX
       if (response.statusCode == 200) {
         try {
           final data = jsonDecode(response.body);
