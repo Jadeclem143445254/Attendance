@@ -30,6 +30,9 @@ jobs:
       - name: Get Dependencies
         run: flutter pub get
 
+      - name: Repair Android Gradle Project
+        run: flutter create --platforms=android .
+
       - name: Build APK
         run: flutter build apk --release
 
