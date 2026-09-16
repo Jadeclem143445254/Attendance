@@ -283,7 +283,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
   }
 }
 
-// MAIN ATTENDANCE SCREEN WITH AUTO-RECOVERING CAMERA
+// MAIN ATTENDANCE SCREEN WITH STANDARD TIME SYNC
 class AttendanceScreen extends StatefulWidget {
   final CameraDescription camera;
   final String userName;
@@ -305,26 +305,61 @@ class AttendanceScreen extends StatefulWidget {
 class _AttendanceScreenState extends State<AttendanceScreen> {
   CameraController? _controller;
   final _siteController = TextEditingController();
-  String _status = "Ready";
+  String _status = "Syncing Standard Time...";
   bool _isLoading = false;
   
   Timer? _clockTimer;
   Timer? _inactivityTimer;
-  String _currentTimeString = "";
+  
+  Duration _serverTimeOffset = Duration.zero;
+  bool _isTimeSynced = false;
+  String _currentTimeString = "00:00:00 AM | Syncing...";
 
   @override
   void initState() {
     super.initState();
     _initCamera();
-    _startClock();
+    _syncStandardTime();
     _resetInactivityTimer();
   }
 
+  // Fetch standard server time and calculate offset
+  Future<void> _syncStandardTime() async {
+    try {
+      final response = await http
+          .get(Uri.parse("https://clemenguavis.pythonanywhere.com/api/time"))
+          .timeout(const Duration(seconds: 5));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        DateTime serverTime = DateTime.parse(data['server_time']);
+        DateTime deviceTime = DateTime.now();
+
+        setState(() {
+          _serverTimeOffset = serverTime.difference(deviceTime);
+          _isTimeSynced = true;
+          _status = "Standard Time Synced";
+        });
+      } else {
+        setState(() => _status = "Ready (Local Clock)");
+      }
+    } catch (_) {
+      setState(() => _status = "Ready (Offline Time)");
+    } finally {
+      _startClock();
+    }
+  }
+
+  DateTime get _currentStandardTime {
+    return DateTime.now().add(_serverTimeOffset);
+  }
+
   void _startClock() {
+    _clockTimer?.cancel();
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) {
         setState(() {
-          _currentTimeString = DateFormat('hh:mm:ss a | EEE, MMM d').format(DateTime.now());
+          _currentTimeString = DateFormat('hh:mm:ss a | EEE, MMM d').format(_currentStandardTime);
         });
       }
     });
@@ -357,7 +392,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  // Safe camera capture helper with channel auto-recovery
   Future<XFile?> _safeTakePicture() async {
     if (_controller == null || !_controller!.value.isInitialized) {
       await _initCamera();
@@ -374,7 +408,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     try {
       return await _controller!.takePicture();
     } catch (e) {
-      // If channel lost connection, re-initialize camera and retry once
       await _initCamera();
       if (_controller != null && _controller!.value.isInitialized) {
         try {
@@ -404,18 +437,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     });
 
     try {
-      // 1. Take picture FIRST before GPS delay
+      // 1. Take photo first
       XFile? photo = await _safeTakePicture();
 
       if (photo == null) {
-        setState(() => _status = "Camera Busy or Disconnected. Please tap again.");
+        setState(() => _status = "Camera Busy. Please tap again.");
         return;
       }
 
       List<int> imageBytes = await File(photo.path).readAsBytes();
       String base64Image = base64Encode(imageBytes);
 
-      // 2. Fetch GPS Location
+      // 2. Fetch Location
       setState(() => _status = "Getting GPS location...");
       Position pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
@@ -435,7 +468,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         );
       });
 
-      // 3. Send to Server
+      // 3. Current standard ISO timestamp
+      String syncedIsoTime = _currentStandardTime.toIso8601String();
+
       setState(() => _status = "Transmitting to server...");
 
       final response = await http.post(
@@ -450,6 +485,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           "latitude": pos.latitude,
           "longitude": pos.longitude,
           "photo_base64": base64Image,
+          "timestamp": syncedIsoTime, // Send synchronized standard timestamp
         }),
       );
 
@@ -530,7 +566,22 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ),
               ),
               const SizedBox(height: 6),
-              Text(_currentTimeString, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87)),
+              // SYNCED STANDARD TIME DISPLAY
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    _isTimeSynced ? Icons.sync : Icons.sync_problem,
+                    size: 14,
+                    color: _isTimeSynced ? Colors.green.shade700 : Colors.orange.shade800,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _currentTimeString,
+                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black87),
+                  ),
+                ],
+              ),
               const SizedBox(height: 8),
               Expanded(
                 child: ClipRRect(
