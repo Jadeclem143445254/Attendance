@@ -1,5 +1,5 @@
-name: svti_attendance_app
-description: SVTI Mobile Attendance System
+name: svti_attendance
+description: "SVTI Attendance App"
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -15,6 +15,10 @@ dependencies:
   intl: ^0.18.1
   permission_handler: ^11.0.1
   shared_preferences: ^2.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
 
 flutter:
   uses-material-design: true
