@@ -41,8 +41,9 @@ class AttendanceScreen extends StatefulWidget {
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
   late CameraController _controller;
-  final _empController = TextEditingController();
+  final _nameController = TextEditingController();
   String _status = "Initializing system...";
+  String _locationDisplay = "Acquiring real-time location...";
   bool _isLoading = false;
 
   @override
@@ -55,18 +56,32 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     await [Permission.camera, Permission.location].request();
     _controller = CameraController(widget.camera, ResolutionPreset.medium);
     await _controller.initialize();
-    if (mounted) setState(() => _status = "Ready to record attendance");
+
+    // Fetch initial real-time location preview
+    try {
+      Position pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+      if (mounted) {
+        setState(() {
+          _locationDisplay = "Current Location: ${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}";
+          _status = "Ready to record attendance";
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _locationDisplay = "GPS active (fetching...)");
+    }
   }
 
   Future<void> _submitAttendance(String actionType) async {
-    if (_empController.text.trim().isEmpty) {
-      setState(() => _status = "Error: Enter Employee ID");
+    if (_nameController.text.trim().isEmpty) {
+      setState(() => _status = "Error: Please enter your Name");
       return;
     }
 
     setState(() {
       _isLoading = true;
-      _status = "Acquiring location & photo...";
+      _status = "Capturing selfie & real-time GPS...";
     });
 
     try {
@@ -74,17 +89,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         desiredAccuracy: LocationAccuracy.high,
       );
 
+      setState(() {
+        _locationDisplay = "Captured Location: ${pos.latitude.toStringAsFixed(5)}, ${pos.longitude.toStringAsFixed(5)}";
+      });
+
       XFile photo = await _controller.takePicture();
       List<int> imageBytes = await File(photo.path).readAsBytes();
       String base64Image = base64Encode(imageBytes);
 
-      setState(() => _status = "Transmitting to server...");
+      setState(() => _status = "Transmitting record...");
 
       final response = await http.post(
         Uri.parse("https://clemenguavis.pythonanywhere.com/api/attendance"),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode({
-          "employee_id": _empController.text.trim(),
+          "employee_id": _nameController.text.trim(),
           "action_type": actionType,
           "latitude": pos.latitude,
           "longitude": pos.longitude,
@@ -109,53 +128,81 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   @override
   void dispose() {
     _controller.dispose();
-    _empController.dispose();
+    _nameController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("SVTI Mobile Attendance")),
+      appBar: AppBar(
+        title: const Text("SVTI Mobile Attendance"),
+        centerTitle: true,
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
             Expanded(
-              child: _controller.value.isInitialized
-                  ? CameraPreview(_controller)
-                  : const Center(child: CircularProgressIndicator()),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _empController,
-              decoration: const InputDecoration(
-                labelText: "Employee ID",
-                border: OutlineInputBorder(),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: _controller.value.isInitialized
+                    ? CameraPreview(_controller)
+                    : const Center(child: CircularProgressIndicator()),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                _locationDisplay,
+                style: const TextStyle(fontSize: 12, color: Colors.blueAccent, fontWeight: FontWeight.w600),
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: "Full Name",
+                hintText: "Enter employee name",
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.person),
+              ),
+            ),
+            const SizedBox(height: 10),
             Text(
               _status,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 12),
             Row(
               children: [
                 Expanded(
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                    onPressed: _isLoading ? null : () => _submitAttendance("LOG_IN"),
-                    child: const Text("LOG IN", style: TextStyle(color: Colors.white)),
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.login, color: Colors.white),
+                    label: const Text("Time In", style: TextStyle(color: Colors.white, fontSize: 16)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: _isLoading ? null : () => _submitAttendance("Time In"),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                    onPressed: _isLoading ? null : () => _submitAttendance("LOG_OUT"),
-                    child: const Text("LOG OUT", style: TextStyle(color: Colors.white)),
+                  child: ElevatedButton.icon(
+                    icon: const Icon(Icons.logout, color: Colors.white),
+                    label: const Text("Time Out", style: TextStyle(color: Colors.white, fontSize: 16)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    onPressed: _isLoading ? null : () => _submitAttendance("Time Out"),
                   ),
                 ),
               ],
