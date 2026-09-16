@@ -30,10 +30,25 @@ jobs:
       - name: Get Dependencies
         run: flutter pub get
 
-      - name: Clean & Rebuild Android Project
+      - name: Clean & Rebuild Android Framework
         run: |
           rm -rf android
           flutter create --platforms=android --project-name=attendance .
+
+      - name: Force Upgrade Kotlin Version
+        run: |
+          python3 -c "
+          import os
+          for root, _, files in os.walk('android'):
+              for file in files:
+                  if file.endswith(('.gradle', '.gradle.kts')):
+                      p = os.path.join(root, file)
+                      with open(p, 'r') as f:
+                          s = f.read()
+                      s = s.replace('1.7.1', '1.9.22').replace('1.8.0', '1.9.22').replace('1.8.10', '1.9.22').replace('1.8.20', '1.9.22')
+                      with open(p, 'w') as f:
+                          f.write(s)
+          "
 
       - name: Add Camera & Location Permissions
         run: |
