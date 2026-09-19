@@ -1,12 +1,9 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
-
-import 'web_camera.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,6 +38,7 @@ class AttendanceScreen extends StatefulWidget {
 }
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
+  // Backend server endpoint
   static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
 
   final TextEditingController _employeeIdController = TextEditingController();
@@ -85,36 +83,25 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Selfie Capture: Uses live webcam dialog on Web link, and native camera on APK
+  /// Pure Cross-Platform Camera Capture (Compatible with Web and APK builds)
   Future<void> _captureSelfie() async {
     try {
-      if (kIsWeb) {
-        final bytes = await openWebCamDialog(context);
-        if (bytes != null) {
-          setState(() {
-            _imageBytes = bytes;
-            _photoBase64 = base64Encode(bytes);
-          });
-          _setStatus('Selfie captured successfully!', isSuccess: true);
-        }
-      } else {
-        final ImagePicker picker = ImagePicker();
-        final XFile? photo = await picker.pickImage(
-          source: ImageSource.camera,
-          preferredCameraDevice: CameraDevice.front,
-          maxWidth: 800,
-          maxHeight: 800,
-          imageQuality: 85,
-        );
+      final ImagePicker picker = ImagePicker();
+      final XFile? photo = await picker.pickImage(
+        source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.front,
+        maxWidth: 800,
+        maxHeight: 800,
+        imageQuality: 85,
+      );
 
-        if (photo != null) {
-          final bytes = await photo.readAsBytes();
-          setState(() {
-            _imageBytes = bytes;
-            _photoBase64 = base64Encode(bytes);
-          });
-          _setStatus('Selfie captured successfully!', isSuccess: true);
-        }
+      if (photo != null) {
+        final bytes = await photo.readAsBytes();
+        setState(() {
+          _imageBytes = bytes;
+          _photoBase64 = base64Encode(bytes);
+        });
+        _setStatus('Selfie captured successfully!', isSuccess: true);
       }
     } catch (e) {
       _setStatus('Unable to access camera: $e', isSuccess: false);
@@ -172,6 +159,46 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
+  /// Power Button Action: Confirmation Dialog to Reset / Exit Session
+  void _confirmPowerExit() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF131B2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Row(
+          children: [
+            Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
+            SizedBox(width: 8),
+            Text('Reset Session', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        content: const Text(
+          'Are you sure you want to clear current entry data and reset the session?',
+          style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF94A3B8))),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              Navigator.of(context).pop();
+              _resetForm();
+              _setStatus('Session reset successfully', isSuccess: true);
+            },
+            child: const Text('Reset', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _setStatus(String message, {required bool isSuccess}) {
     setState(() {
       _statusMessage = message;
@@ -211,7 +238,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // App Header Bar
+                  // App Header
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     decoration: BoxDecoration(
@@ -263,9 +290,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             ],
                           ),
                         ),
+                        // Working Power Button
                         IconButton(
+                          tooltip: 'Reset Session',
                           icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
-                          onPressed: () {},
+                          onPressed: _confirmPowerExit,
                         ),
                       ],
                     ),
@@ -273,7 +302,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Form Inputs
+                  // Form Container
                   Container(
                     padding: const EdgeInsets.all(16.0),
                     decoration: BoxDecoration(
@@ -398,9 +427,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Action Buttons (TIME IN / TIME OUT)
+                  // TIME IN & TIME OUT Buttons
                   Row(
                     children: [
+                      // TIME IN
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -446,6 +476,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                       ),
                       const SizedBox(width: 12),
+                      // TIME OUT
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -493,7 +524,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
 
-                  // Status / Prompt Container
+                  // Success Prompt & Status Message
                   if (_statusMessage != null) ...[
                     const SizedBox(height: 16),
                     AnimatedContainer(
