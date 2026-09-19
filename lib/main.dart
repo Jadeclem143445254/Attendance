@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:camera/camera.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
 
@@ -53,8 +52,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? _statusMessage;
   bool _isSuccess = true;
 
-  CameraController? _cameraController;
-
   /// Fetch location silently in background
   Future<Position?> _fetchCurrentLocation() async {
     try {
@@ -88,111 +85,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Selfie Capture Dialog
+  /// Native Selfie Capture (Fixes Mobile Browser Permission Loop)
   Future<void> _captureSelfie() async {
-    try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        await _fallbackImagePicker();
-        return;
-      }
-
-      final frontCamera = cameras.firstWhere(
-        (cam) => cam.lensDirection == CameraLensDirection.front,
-        orElse: () => cameras.first,
-      );
-
-      _cameraController = CameraController(
-        frontCamera,
-        ResolutionPreset.medium,
-        enableAudio: false,
-      );
-
-      await _cameraController!.initialize();
-      if (!mounted) return;
-
-      await showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) {
-          return AlertDialog(
-            backgroundColor: const Color(0xFF131B2E),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-              side: const BorderSide(color: Color(0xFF26334D)),
-            ),
-            title: const Text(
-              'Take Selfie Verification',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
-              textAlign: TextAlign.center,
-            ),
-            content: SizedBox(
-              width: 320,
-              height: 320,
-              child: _cameraController != null && _cameraController!.value.isInitialized
-                  ? ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: CameraPreview(_cameraController!),
-                    )
-                  : const Center(
-                      child: CircularProgressIndicator(color: Color(0xFF2563EB)),
-                    ),
-            ),
-            actionsAlignment: MainAxisAlignment.spaceBetween,
-            actions: [
-              TextButton(
-                onPressed: () {
-                  _closeCamera();
-                  Navigator.of(dialogContext).pop();
-                },
-                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-              ),
-              ElevatedButton.icon(
-                onPressed: () async {
-                  try {
-                    if (_cameraController != null && _cameraController!.value.isInitialized) {
-                      final photo = await _cameraController!.takePicture();
-                      final bytes = await photo.readAsBytes();
-                      setState(() {
-                        _imageBytes = bytes;
-                        _photoBase64 = base64Encode(bytes);
-                      });
-                      _closeCamera();
-                      if (dialogContext.mounted) {
-                        Navigator.of(dialogContext).pop();
-                      }
-                      _setStatus('Selfie captured successfully!', isSuccess: true);
-                    }
-                  } catch (e) {
-                    _setStatus('Error capturing photo: $e', isSuccess: false);
-                  }
-                },
-                icon: const Icon(Icons.camera_alt),
-                label: const Text('CAPTURE'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF2563EB),
-                  foregroundColor: Colors.white,
-                ),
-              ),
-            ],
-          );
-        },
-      );
-    } catch (e) {
-      await _fallbackImagePicker();
-    } finally {
-      _closeCamera();
-    }
-  }
-
-  Future<void> _fallbackImagePicker() async {
     try {
       final ImagePicker picker = ImagePicker();
       final XFile? photo = await picker.pickImage(
         source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.front,
         maxWidth: 800,
         maxHeight: 800,
-        imageQuality: 80,
+        imageQuality: 85,
       );
 
       if (photo != null) {
@@ -206,11 +108,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     } catch (e) {
       _setStatus('Unable to access camera: $e', isSuccess: false);
     }
-  }
-
-  void _closeCamera() {
-    _cameraController?.dispose();
-    _cameraController = null;
   }
 
   /// Submit Attendance for TIME IN or TIME OUT
@@ -287,7 +184,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   @override
   void dispose() {
-    _closeCamera();
     _employeeIdController.dispose();
     _phoneController.dispose();
     _siteNameController.dispose();
@@ -502,39 +398,73 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Action Buttons (TIME IN / TIME OUT)
+                  // Perfectly Aligned Action Buttons (TIME IN / TIME OUT)
                   Row(
                     children: [
+                      // TIME IN BUTTON
                       Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _isLoading ? null : () => _submitAttendance('Time In'),
-                          icon: const Icon(Icons.arrow_forward, size: 18),
-                          label: const Text(
-                            'TIME IN',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF2563EB),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isLoading ? null : () => _submitAttendance('Time In'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2563EB),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
+                                  SizedBox(width: 6),
+                                  Text(
+                                    'TIME IN',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
                       ),
                       const SizedBox(width: 12),
+                      // TIME OUT BUTTON
                       Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: _isLoading ? null : () => _submitAttendance('Time Out'),
-                          icon: const Icon(Icons.exit_to_app, size: 18),
-                          label: const Text(
-                            'TIME OUT',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFFDC2626),
-                            foregroundColor: Colors.white,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isLoading ? null : () => _submitAttendance('Time Out'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFDC2626),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(Icons.logout_rounded, color: Colors.white, size: 18),
+                                  SizedBox(width: 6),
+                                  Text(
+                                    'TIME OUT',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
                         ),
                       ),
