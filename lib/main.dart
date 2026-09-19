@@ -1,12 +1,13 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const AttendanceApp());
 }
@@ -84,21 +85,19 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Opens Live Webcam Stream in a Modal Dialog (Direct camera capture on PC & Mobile)
-  Future<Uint8List?> _openLiveCameraDialog() async {
+  /// Tries Desktop Live Camera stream (used for PC web)
+  Future<Uint8List?> _tryDesktopLiveCamera() async {
+    CameraController? controller;
     try {
       final cameras = await availableCameras();
-      if (cameras.isEmpty) {
-        throw Exception('No camera hardware found');
-      }
+      if (cameras.isEmpty) return null;
 
-      // Default to Front Camera if available, otherwise First Camera
       final camera = cameras.firstWhere(
         (cam) => cam.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
       );
 
-      final controller = CameraController(
+      controller = CameraController(
         camera,
         ResolutionPreset.medium,
         enableAudio: false,
@@ -130,15 +129,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               height: 320,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: CameraPreview(controller),
+                child: CameraPreview(controller!),
               ),
             ),
             actionsAlignment: MainAxisAlignment.center,
             actions: [
               TextButton(
-                onPressed: () {
-                  Navigator.of(dialogContext).pop();
-                },
+                onPressed: () => Navigator.of(dialogContext).pop(),
                 child: const Text('Cancel', style: TextStyle(color: Color(0xFF94A3B8))),
               ),
               ElevatedButton.icon(
@@ -149,7 +146,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 ),
                 onPressed: () async {
                   try {
-                    final photo = await controller.takePicture();
+                    final photo = await controller!.takePicture();
                     capturedBytes = await photo.readAsBytes();
                   } catch (_) {}
                   Navigator.of(dialogContext).pop();
@@ -165,7 +162,34 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       await controller.dispose();
       return capturedBytes;
     } catch (_) {
-      // Fallback to ImagePicker if live hardware streaming is unavailable
+      if (controller != null) {
+        await controller.dispose();
+      }
+      return null;
+    }
+  }
+
+  /// Triggers selfie verification action without permission prompt loops
+  Future<void> _captureSelfie() async {
+    try {
+      final bool isMobileDevice = defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS;
+
+      // On Desktop Web, attempt live streaming popup
+      if (kIsWeb && !isMobileDevice) {
+        final bytes = await _tryDesktopLiveCamera();
+        if (bytes != null) {
+          setState(() {
+            _imageBytes = bytes;
+            _photoBase64 = base64Encode(bytes);
+          });
+          _setStatus('Selfie captured successfully!', isSuccess: true);
+          return;
+        }
+      }
+
+      // On Mobile Web (Messenger/Chrome), Android APK, or desktop fallback:
+      // Direct native camera trigger prevents WebRTC permission loop bugs
       final ImagePicker picker = ImagePicker();
       final XFile? photo = await picker.pickImage(
         source: ImageSource.camera,
@@ -174,18 +198,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         maxHeight: 800,
         imageQuality: 85,
       );
-      if (photo != null) {
-        return await photo.readAsBytes();
-      }
-      return null;
-    }
-  }
 
-  /// Triggers selfie verification action
-  Future<void> _captureSelfie() async {
-    try {
-      final bytes = await _openLiveCameraDialog();
-      if (bytes != null) {
+      if (photo != null) {
+        final bytes = await photo.readAsBytes();
         setState(() {
           _imageBytes = bytes;
           _photoBase64 = base64Encode(bytes);
@@ -327,7 +342,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // App Header
+                  // Header
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     decoration: BoxDecoration(
@@ -470,7 +485,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Live Selfie Verification Button
+                  // Selfie Verification Button
                   InkWell(
                     onTap: _isLoading ? null : _captureSelfie,
                     borderRadius: BorderRadius.circular(12),
@@ -516,7 +531,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // TIME IN & TIME OUT Buttons
+                  // Action Buttons
                   Row(
                     children: [
                       // TIME IN
@@ -613,7 +628,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
 
-                  // Success Prompt & Status Message
+                  // Status / Prompt Container
                   if (_statusMessage != null) ...[
                     const SizedBox(height: 16),
                     AnimatedContainer(
