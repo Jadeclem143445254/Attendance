@@ -180,7 +180,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       );
     } catch (e) {
       await _fallbackImagePicker();
-    } fontally {
+    } finally {
       _closeCamera();
     }
   }
