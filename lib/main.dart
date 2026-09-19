@@ -3,9 +3,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const AttendanceApp());
 }
@@ -83,9 +84,88 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Pure Cross-Platform Camera Capture (Compatible with Web and APK builds)
-  Future<void> _captureSelfie() async {
+  /// Opens Live Webcam Stream in a Modal Dialog (Direct camera capture on PC & Mobile)
+  Future<Uint8List?> _openLiveCameraDialog() async {
     try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        throw Exception('No camera hardware found');
+      }
+
+      // Default to Front Camera if available, otherwise First Camera
+      final camera = cameras.firstWhere(
+        (cam) => cam.lensDirection == CameraLensDirection.front,
+        orElse: () => cameras.first,
+      );
+
+      final controller = CameraController(
+        camera,
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
+
+      await controller.initialize();
+
+      if (!mounted) {
+        await controller.dispose();
+        return null;
+      }
+
+      Uint8List? capturedBytes;
+
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF131B2E),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: const Text(
+              'Live Selfie Verification',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+            content: SizedBox(
+              width: 320,
+              height: 320,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: CameraPreview(controller),
+              ),
+            ),
+            actionsAlignment: MainAxisAlignment.center,
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(dialogContext).pop();
+                },
+                child: const Text('Cancel', style: TextStyle(color: Color(0xFF94A3B8))),
+              ),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2563EB),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () async {
+                  try {
+                    final photo = await controller.takePicture();
+                    capturedBytes = await photo.readAsBytes();
+                  } catch (_) {}
+                  Navigator.of(dialogContext).pop();
+                },
+                icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+                label: const Text('Snap Photo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          );
+        },
+      );
+
+      await controller.dispose();
+      return capturedBytes;
+    } catch (_) {
+      // Fallback to ImagePicker if live hardware streaming is unavailable
       final ImagePicker picker = ImagePicker();
       final XFile? photo = await picker.pickImage(
         source: ImageSource.camera,
@@ -94,9 +174,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         maxHeight: 800,
         imageQuality: 85,
       );
-
       if (photo != null) {
-        final bytes = await photo.readAsBytes();
+        return await photo.readAsBytes();
+      }
+      return null;
+    }
+  }
+
+  /// Triggers selfie verification action
+  Future<void> _captureSelfie() async {
+    try {
+      final bytes = await _openLiveCameraDialog();
+      if (bytes != null) {
         setState(() {
           _imageBytes = bytes;
           _photoBase64 = base64Encode(bytes);
@@ -159,7 +248,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Power Button Action: Confirmation Dialog to Reset / Exit Session
+  /// Power Button Action: Session Reset Dialog
   void _confirmPowerExit() {
     showDialog(
       context: context,
@@ -381,7 +470,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Selfie Verification Button
+                  // Live Selfie Verification Button
                   InkWell(
                     onTap: _isLoading ? null : _captureSelfie,
                     borderRadius: BorderRadius.circular(12),
