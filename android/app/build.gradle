@@ -23,9 +23,15 @@ if (flutterVersionName == null) {
 }
 
 android {
-    namespace "com.example.attendance"
-    compileSdk flutter.compileSdkVersion
-    ndkVersion flutter.ndkVersion
+    ...
+    defaultConfig {
+        applicationId "com.example.attendance" // your package name
+        minSdkVersion 21                       // Change this line to 21
+        targetSdkVersion flutter.targetSdkVersion
+        versionCode flutterVersionCode.toInteger()
+        versionName flutterVersionName
+    }
+}
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
