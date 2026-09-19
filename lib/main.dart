@@ -1,11 +1,12 @@
 import 'dart:convert';
-import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:camera/camera.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -61,10 +62,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   String _actionType = 'Time In';
   bool _isOvertime = false;
-  File? _capturedImage;
+  Uint8List? _capturedImageBytes;
   String? _base64Photo;
   bool _isLoading = false;
   String _locationStatus = 'Location not fetched';
+
+  CameraController? _cameraController;
 
   @override
   void initState() {
@@ -74,6 +77,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   @override
   void dispose() {
+    _closeCamera();
     _employeeController.dispose();
     _phoneController.dispose();
     _siteController.dispose();
@@ -87,6 +91,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   // Request Runtime Permissions for Camera & Location
   Future<void> _requestPermissions() async {
+    if (kIsWeb) return; // Browser manages permissions natively on web
     Map<Permission, PermissionStatus> statuses = await [
       Permission.camera,
       Permission.locationWhenInUse,
@@ -115,20 +120,117 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     await prefs.setString('saved_site_name', _siteController.text.trim());
   }
 
-  // Capture Photo Verification
+  // Capture Photo Verification (Live Webcam Preview for PC Web + Mobile Compatibility)
   Future<void> _takePhoto() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isNotEmpty) {
+        // Select front selfie camera if available, otherwise default to first camera
+        final frontCamera = cameras.firstWhere(
+          (cam) => cam.lensDirection == CameraLensDirection.front,
+          orElse: () => cameras.first,
+        );
+
+        _cameraController = CameraController(
+          frontCamera,
+          ResolutionPreset.medium,
+          enableAudio: false,
+        );
+
+        await _cameraController!.initialize();
+        if (!mounted) return;
+
+        // Display live camera preview modal
+        await showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1E293B),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: const BorderSide(color: Color(0xFF334155)),
+              ),
+              title: const Text(
+                'Selfie Verification',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                textAlign: TextAlign.center,
+              ),
+              content: SizedBox(
+                width: 380,
+                height: 380,
+                child: _cameraController != null && _cameraController!.value.isInitialized
+                    ? ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: CameraPreview(_cameraController!),
+                      )
+                    : const Center(
+                        child: CircularProgressIndicator(color: Color(0xFFE11D48)),
+                      ),
+              ),
+              actionsAlignment: MainAxisAlignment.spaceBetween,
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    _closeCamera();
+                    Navigator.of(dialogContext).pop();
+                  },
+                  child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                ),
+                ElevatedButton.icon(
+                  onPressed: () async {
+                    try {
+                      if (_cameraController != null && _cameraController!.value.isInitialized) {
+                        final photo = await _cameraController!.takePicture();
+                        final bytes = await photo.readAsBytes();
+                        setState(() {
+                          _capturedImageBytes = bytes;
+                          _base64Photo = base64Encode(bytes);
+                        });
+                        _closeCamera();
+                        if (dialogContext.mounted) {
+                          Navigator.of(dialogContext).pop();
+                        }
+                      }
+                    } catch (e) {
+                      _showSnackBar('Error capturing photo: $e');
+                    }
+                  },
+                  icon: const Icon(Icons.camera_alt),
+                  label: const Text('SNAP PHOTO'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFE11D48),
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      } else {
+        await _fallbackImagePicker();
+      }
+    } catch (e) {
+      await _fallbackImagePicker();
+    } finally {
+      _closeCamera();
+    }
+  }
+
+  // Fallback image picker if camera stream permission is restricted
+  Future<void> _fallbackImagePicker() async {
     try {
       final ImagePicker picker = ImagePicker();
       final XFile? photo = await picker.pickImage(
         source: ImageSource.camera,
-        imageQuality: 45, // Compressed to optimize JSON payload size
+        imageQuality: 45,
         maxWidth: 600,
       );
 
       if (photo != null) {
         final bytes = await photo.readAsBytes();
         setState(() {
-          _capturedImage = File(photo.path);
+          _capturedImageBytes = bytes;
           _base64Photo = base64Encode(bytes);
         });
       }
@@ -137,7 +239,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  // Get GPS Coordinates
+  void _closeCamera() {
+    _cameraController?.dispose();
+    _cameraController = null;
+  }
+
+  // Get GPS Coordinates (Fixes iOS Null Island 0,0 issue)
   Future<Position?> _getCurrentLocation() async {
     setState(() => _locationStatus = 'Fetching GPS coordinates...');
 
@@ -166,10 +273,19 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     try {
       Position position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
+        desiredAccuracy: LocationAccuracy.medium,
         timeLimit: const Duration(seconds: 10),
       );
-      setState(() => _locationStatus = 'Lat: ${position.latitude.toStringAsFixed(4)}, Lon: ${position.longitude.toStringAsFixed(4)}');
+
+      // Prevent Null Island (0.0, 0.0) submission on iOS Web
+      if (position.latitude == 0.0 && position.longitude == 0.0) {
+        _showSnackBar('Invalid GPS coordinates (0,0). Ensure URL uses https:// and try again.');
+        setState(() => _locationStatus = 'Invalid GPS (0,0)');
+        return null;
+      }
+
+      setState(() => _locationStatus =
+          'Lat: ${position.latitude.toStringAsFixed(4)}, Lon: ${position.longitude.toStringAsFixed(4)}');
       return position;
     } catch (e) {
       _showSnackBar('Could not acquire location: $e');
@@ -229,7 +345,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   void _resetImageAndOptions() {
     setState(() {
-      _capturedImage = null;
+      _capturedImageBytes = null;
       _base64Photo = null;
       _isOvertime = false;
       _locationStatus = 'Location reset';
@@ -292,7 +408,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               child: Form(
                 key: _formKey,
                 child: Column(
-                  crossAxisAlignment: CrossAlignment.stretch,
+                  // Corrected crossAxisAlignment syntax error
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     // Brand Logo Header
                     Center(
@@ -319,14 +436,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           color: const Color(0xFF1E293B),
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(
-                            color: _capturedImage != null ? const Color(0xFFE11D48) : const Color(0xFF334155),
+                            color: _capturedImageBytes != null ? const Color(0xFFE11D48) : const Color(0xFF334155),
                             width: 1.5,
                           ),
                         ),
-                        child: _capturedImage != null
+                        child: _capturedImageBytes != null
                             ? ClipRRect(
                                 borderRadius: BorderRadius.circular(11),
-                                child: Image.file(_capturedImage!, fit: BoxFit.cover),
+                                child: Image.memory(_capturedImageBytes!, fit: BoxFit.cover),
                               )
                             : const Column(
                                 mainAxisAlignment: MainAxisAlignment.center,
