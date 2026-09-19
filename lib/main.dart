@@ -100,12 +100,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        // Fallback to ImagePicker if no camera stream detected
         await _fallbackImagePicker();
         return;
       }
 
-      // Default to front camera (user-facing) for selfie
       final frontCamera = cameras.firstWhere(
         (cam) => cam.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
@@ -121,7 +119,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
       if (!mounted) return;
 
-      // Launch in-page live webcam preview modal
       await showDialog(
         context: context,
         barrierDismissible: false,
@@ -191,14 +188,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         },
       );
     } catch (e) {
-      // Fallback to standard picker if webcam stream fails or permissions blocked
       await _fallbackImagePicker();
     } finally {
       _closeCamera();
     }
   }
 
-  /// Fallback image picker if WebRTC stream is blocked by browser policy
   Future<void> _fallbackImagePicker() async {
     try {
       final ImagePicker picker = ImagePicker();
