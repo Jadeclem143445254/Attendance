@@ -17,15 +17,14 @@ class AttendanceApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SVTI Attendance Portal',
+      title: 'SVTI Mobile',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFE11D48),
-          primary: const Color(0xFFE11D48),
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF090D16),
+        colorScheme: const ColorScheme.dark(
+          primary: Color(0xFF2563EB),
+          surface: Color(0xFF131B2E),
         ),
-        scaffoldBackgroundColor: const Color(0xFF0F172A),
-        useMaterial3: true,
       ),
       home: const AttendanceScreen(),
     );
@@ -47,20 +46,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _siteNameController = TextEditingController();
 
-  String _actionType = 'Time In';
   bool _isOvertime = false;
   String? _photoBase64;
   Uint8List? _imageBytes;
   bool _isLoading = false;
+  String? _statusMessage;
+  bool _isSuccess = true;
 
   CameraController? _cameraController;
 
-  /// Silently fetches GPS location in the background
+  /// Fetch location silently in background
   Future<Position?> _fetchCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _showSnackBar('Location services are disabled on your device.');
+        _setStatus('Location services are disabled on your device.', isSuccess: false);
         return null;
       }
 
@@ -68,13 +68,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
-          _showSnackBar('Location permissions are denied.');
+          _setStatus('Location permissions are denied.', isSuccess: false);
           return null;
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
-        _showSnackBar('Location permissions are permanently denied.');
+        _setStatus('Location permissions are permanently denied.', isSuccess: false);
         return null;
       }
 
@@ -83,12 +83,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         timeLimit: const Duration(seconds: 10),
       );
     } catch (e) {
-      _showSnackBar('Unable to fetch location: $e');
+      _setStatus('Unable to fetch location: $e', isSuccess: false);
       return null;
     }
   }
 
-  /// Handles Camera Capture
+  /// Selfie Capture Dialog
   Future<void> _captureSelfie() async {
     try {
       final cameras = await availableCameras();
@@ -109,7 +109,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       );
 
       await _cameraController!.initialize();
-
       if (!mounted) return;
 
       await showDialog(
@@ -117,26 +116,26 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         barrierDismissible: false,
         builder: (dialogContext) {
           return AlertDialog(
-            backgroundColor: const Color(0xFF1E293B),
+            backgroundColor: const Color(0xFF131B2E),
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-              side: const BorderSide(color: Color(0xFF334155)),
+              borderRadius: BorderRadius.circular(16),
+              side: const BorderSide(color: Color(0xFF26334D)),
             ),
             title: const Text(
-              'Webcam Selfie Capture',
-              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              'Take Selfie Verification',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
               textAlign: TextAlign.center,
             ),
             content: SizedBox(
-              width: 380,
-              height: 380,
+              width: 320,
+              height: 320,
               child: _cameraController != null && _cameraController!.value.isInitialized
                   ? ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
+                      borderRadius: BorderRadius.circular(12),
                       child: CameraPreview(_cameraController!),
                     )
                   : const Center(
-                      child: CircularProgressIndicator(color: Color(0xFFE11D48)),
+                      child: CircularProgressIndicator(color: Color(0xFF2563EB)),
                     ),
             ),
             actionsAlignment: MainAxisAlignment.spaceBetween,
@@ -162,18 +161,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       if (dialogContext.mounted) {
                         Navigator.of(dialogContext).pop();
                       }
-                      _showSnackBar('Selfie captured successfully!');
+                      _setStatus('Selfie captured successfully!', isSuccess: true);
                     }
                   } catch (e) {
-                    _showSnackBar('Error capturing photo: $e');
+                    _setStatus('Error capturing photo: $e', isSuccess: false);
                   }
                 },
                 icon: const Icon(Icons.camera_alt),
-                label: const Text('SNAP PHOTO'),
+                label: const Text('CAPTURE'),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFE11D48),
+                  backgroundColor: const Color(0xFF2563EB),
                   foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                 ),
               ),
             ],
@@ -182,7 +180,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       );
     } catch (e) {
       await _fallbackImagePicker();
-    } finally {
+    } fontally {
       _closeCamera();
     }
   }
@@ -203,9 +201,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           _imageBytes = bytes;
           _photoBase64 = base64Encode(bytes);
         });
+        _setStatus('Selfie captured successfully!', isSuccess: true);
       }
     } catch (e) {
-      _showSnackBar('Unable to access camera: $e');
+      _setStatus('Unable to access camera: $e', isSuccess: false);
     }
   }
 
@@ -214,21 +213,24 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     _cameraController = null;
   }
 
-  Future<void> _submitAttendance() async {
+  /// Submit Attendance for TIME IN or TIME OUT
+  Future<void> _submitAttendance(String actionType) async {
     if (_employeeIdController.text.trim().isEmpty) {
-      _showSnackBar('Please enter Employee Name/ID');
+      _setStatus('Please enter Full Name / ID', isSuccess: false);
       return;
     }
 
     if (_imageBytes == null || _photoBase64 == null) {
-      _showSnackBar('Please take a selfie photo before submitting');
+      _setStatus('Please take selfie verification photo first', isSuccess: false);
       return;
     }
 
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _statusMessage = 'Fetching location & submitting...';
+    });
 
     try {
-      // Automatically capture GPS location silently during submission
       Position? position = await _fetchCurrentLocation();
       if (position == null) {
         setState(() => _isLoading = false);
@@ -244,7 +246,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           'employee_id': _employeeIdController.text.trim(),
           'phone_number': _phoneController.text.trim().isEmpty ? 'N/A' : _phoneController.text.trim(),
           'site_name': _siteNameController.text.trim().isEmpty ? 'Unspecified Site' : _siteNameController.text.trim(),
-          'action_type': _actionType,
+          'action_type': actionType,
           'is_overtime': _isOvertime,
           'latitude': position.latitude,
           'longitude': position.longitude,
@@ -253,17 +255,23 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       );
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        _showSnackBar(data['message'] ?? 'Attendance submitted successfully!');
+        _setStatus('$actionType recorded successfully!', isSuccess: true);
         _resetForm();
       } else {
-        _showSnackBar('Submission failed (Status Code: ${response.statusCode})');
+        _setStatus('Submission failed (Code: ${response.statusCode})', isSuccess: false);
       }
     } catch (e) {
-      _showSnackBar('Network error submitting attendance: $e');
+      _setStatus('Network error: $e', isSuccess: false);
     } finally {
       setState(() => _isLoading = false);
     }
+  }
+
+  void _setStatus(String message, {required bool isSuccess}) {
+    setState(() {
+      _statusMessage = message;
+      _isSuccess = isSuccess;
+    });
   }
 
   void _resetForm() {
@@ -274,14 +282,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _photoBase64 = null;
       _imageBytes = null;
       _isOvertime = false;
-      _actionType = 'Time In';
     });
-  }
-
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
   }
 
   @override
@@ -296,159 +297,296 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'SVTI Attendance',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-        ),
-        backgroundColor: const Color(0xFF1E293B),
-        centerTitle: true,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20.0),
-        child: Center(
-          child: Container(
-            constraints: const BoxConstraints(maxWidth: 500),
-            padding: const EdgeInsets.all(24.0),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E293B),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFF334155)),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // SVTI Logo Header
-                Center(
-                  child: Image.asset(
-                    'assets/svti_logo.png',
-                    height: 75,
-                    fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) => const Column(
+      backgroundColor: const Color(0xFF090D16),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Top Header Bar
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF131B2E),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFF1E293B)),
+                    ),
+                    child: Row(
                       children: [
-                        Icon(Icons.business_rounded, size: 55, color: Color(0xFFE11D48)),
-                        SizedBox(height: 4),
-                        Text(
-                          'SVTI LOGISTICS',
-                          style: TextStyle(
+                        // White Square Logo Box
+                        Container(
+                          width: 48,
+                          height: 48,
+                          padding: const EdgeInsets.all(4),
+                          decoration: BoxDecoration(
                             color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            letterSpacing: 1.2,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Image.asset(
+                            'assets/svti_logo.png',
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stackTrace) => const Icon(
+                              Icons.business_rounded,
+                              color: Color(0xFF2563EB),
+                              size: 28,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 14),
+                        // App Title
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'SVTI Mobile',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              SizedBox(height: 2),
+                              Text(
+                                'Automated Attendance System',
+                                style: TextStyle(
+                                  color: Color(0xFF94A3B8),
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Power Logout Icon
+                        IconButton(
+                          icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
+                          onPressed: () {},
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  // Main Form Card
+                  Container(
+                    padding: const EdgeInsets.all(16.0),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF131B2E),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFF1E293B)),
+                    ),
+                    child: Column(
+                      children: [
+                        // Input: Full Name / ID
+                        _buildInputField(
+                          controller: _employeeIdController,
+                          hintText: 'Full Name / ID',
+                          icon: Icons.person_outline,
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Input: Phone Number
+                        _buildInputField(
+                          controller: _phoneController,
+                          hintText: 'Phone Number',
+                          icon: Icons.smartphone,
+                          keyboardType: TextInputType.phone,
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Input: Site Location
+                        _buildInputField(
+                          controller: _siteNameController,
+                          labelText: 'Site Location',
+                          hintText: 'Site Location',
+                          icon: Icons.location_on_outlined,
+                        ),
+                        const SizedBox(height: 14),
+
+                        // Overtime Card Switch
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF182238),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            children: [
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Mark as Overtime',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      'Toggle on if logging overtime hours',
+                                      style: TextStyle(
+                                        color: Color(0xFF94A3B8),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Checkbox(
+                                value: _isOvertime,
+                                activeColor: const Color(0xFF2563EB),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                side: const BorderSide(color: Color(0xFF475569)),
+                                onChanged: (val) => setState(() => _isOvertime = val ?? false),
+                              ),
+                            ],
                           ),
                         ),
                       ],
                     ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                const Text(
-                  'Record Attendance',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _employeeIdController,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Employee Name / ID *',
-                    labelStyle: TextStyle(color: Colors.grey),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _phoneController,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Phone Number',
-                    labelStyle: TextStyle(color: Colors.grey),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _siteNameController,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Site Location',
-                    labelStyle: TextStyle(color: Colors.grey),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    Expanded(
-                      child: RadioListTile<String>(
-                        title: const Text('Time In', style: TextStyle(color: Colors.white)),
-                        value: 'Time In',
-                        groupValue: _actionType,
-                        onChanged: (val) => setState(() => _actionType = val!),
+
+                  const SizedBox(height: 16),
+
+                  // Selfie Button
+                  InkWell(
+                    onTap: _isLoading ? null : _captureSelfie,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF131B2E),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: const Color(0xFF2563EB), width: 1.5),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.camera_alt_outlined, color: Color(0xFF38BDF8), size: 18),
+                          const SizedBox(width: 8),
+                          Text(
+                            _imageBytes == null ? 'Take Selfie Verification' : 'Selfie Verified ✓',
+                            style: const TextStyle(
+                              color: Color(0xFF38BDF8),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    Expanded(
-                      child: RadioListTile<String>(
-                        title: const Text('Time Out', style: TextStyle(color: Colors.white)),
-                        value: 'Time Out',
-                        groupValue: _actionType,
-                        onChanged: (val) => setState(() => _actionType = val!),
+                  ),
+
+                  // Preview image if taken
+                  if (_imageBytes != null) ...[
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        _imageBytes!,
+                        height: 160,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
                       ),
                     ),
                   ],
-                ),
-                CheckboxListTile(
-                  title: const Text('Overtime Shift', style: TextStyle(color: Colors.white)),
-                  value: _isOvertime,
-                  onChanged: (val) => setState(() => _isOvertime = val ?? false),
-                  controlAffinity: ListTileControlAffinity.leading,
-                ),
-                const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: _isLoading ? null : _captureSelfie,
-                  icon: const Icon(Icons.camera_alt),
-                  label: Text(_imageBytes == null ? 'Take Selfie Photo' : 'Photo Captured ✓'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                ),
-                if (_imageBytes != null) ...[
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: Image.memory(
-                      _imageBytes!,
-                      height: 180,
-                      fit: BoxFit.cover,
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 24),
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _submitAttendance,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFFE11D48),
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 20,
-                          width: 20,
-                          child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                        )
-                      : const Text(
-                          'SUBMIT ATTENDANCE',
-                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+
+                  const SizedBox(height: 16),
+
+                  // Action Buttons (TIME IN / TIME OUT)
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _isLoading ? null : () => _submitAttendance('Time In'),
+                          icon: const Icon(Icons.arrow_forward, size: 18),
+                          label: const Text(
+                            'TIME IN',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF2563EB),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
                         ),
-                ),
-              ],
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _isLoading ? null : () => _submitAttendance('Time Out'),
+                          icon: const Icon(Icons.exit_to_app, size: 18),
+                          label: const Text(
+                            'TIME OUT',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFDC2626),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // Response / Status Message
+                  if (_statusMessage != null) ...[
+                    const SizedBox(height: 16),
+                    Text(
+                      _statusMessage!,
+                      style: TextStyle(
+                        color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInputField({
+    required TextEditingController controller,
+    required String hintText,
+    required IconData icon,
+    String? labelText,
+    TextInputType keyboardType = TextInputType.text,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF182238),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: TextField(
+        controller: controller,
+        keyboardType: keyboardType,
+        style: const TextStyle(color: Colors.white, fontSize: 14),
+        decoration: InputDecoration(
+          labelText: labelText,
+          labelStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
+          hintText: hintText,
+          hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+          prefixIcon: Icon(icon, color: const Color(0xFF38BDF8), size: 20),
+          border: InputBorder.none,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         ),
       ),
     );
