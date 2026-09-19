@@ -40,29 +40,28 @@ class AttendanceScreen extends StatefulWidget {
 }
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
+  // Hardcoded server endpoint
+  static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
+
   final TextEditingController _employeeIdController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _siteNameController = TextEditingController();
-  final TextEditingController _backendUrlController =
-      TextEditingController(text: 'http://localhost:5000');
 
   String _actionType = 'Time In';
   bool _isOvertime = false;
-  double? _latitude;
-  double? _longitude;
   String? _photoBase64;
   Uint8List? _imageBytes;
   bool _isLoading = false;
 
   CameraController? _cameraController;
 
-  Future<void> _getCurrentLocation() async {
-    setState(() => _isLoading = true);
+  /// Silently fetches GPS location in the background
+  Future<Position?> _fetchCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _showSnackBar('Location services are disabled.');
-        return;
+        _showSnackBar('Location services are disabled on your device.');
+        return null;
       }
 
       LocationPermission permission = await Geolocator.checkPermission();
@@ -70,32 +69,26 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
           _showSnackBar('Location permissions are denied.');
-          return;
+          return null;
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
         _showSnackBar('Location permissions are permanently denied.');
-        return;
+        return null;
       }
 
-      Position position = await Geolocator.getCurrentPosition(
+      return await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 10),
       );
-
-      setState(() {
-        _latitude = position.latitude;
-        _longitude = position.longitude;
-      });
-      _showSnackBar('GPS Coordinates captured successfully!');
     } catch (e) {
-      _showSnackBar('Error getting location: $e');
-    } finally {
-      setState(() => _isLoading = false);
+      _showSnackBar('Unable to fetch location: $e');
+      return null;
     }
   }
 
-  /// Handles Camera Capture (Direct live WebRTC stream on PC & Mobile)
+  /// Handles Camera Capture
   Future<void> _captureSelfie() async {
     try {
       final cameras = await availableCameras();
@@ -226,16 +219,23 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _showSnackBar('Please enter Employee Name/ID');
       return;
     }
-    if (_latitude == null || _longitude == null) {
-      _showSnackBar('Please capture your GPS location first');
+
+    if (_imageBytes == null || _photoBase64 == null) {
+      _showSnackBar('Please take a selfie photo before submitting');
       return;
     }
 
     setState(() => _isLoading = true);
 
     try {
-      final String baseUrl = _backendUrlController.text.trim().replaceAll(RegExp(r'/$'), '');
-      final Uri uri = Uri.parse('$baseUrl/api/attendance');
+      // Automatically capture GPS location silently during submission
+      Position? position = await _fetchCurrentLocation();
+      if (position == null) {
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      final Uri uri = Uri.parse('$_backendBaseUrl/api/attendance');
 
       final response = await http.post(
         uri,
@@ -246,8 +246,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           'site_name': _siteNameController.text.trim().isEmpty ? 'Unspecified Site' : _siteNameController.text.trim(),
           'action_type': _actionType,
           'is_overtime': _isOvertime,
-          'latitude': _latitude,
-          'longitude': _longitude,
+          'latitude': position.latitude,
+          'longitude': position.longitude,
           'photo_base64': _photoBase64 ?? '',
         }),
       );
@@ -273,8 +273,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _siteNameController.clear();
       _photoBase64 = null;
       _imageBytes = null;
-      _latitude = null;
-      _longitude = null;
       _isOvertime = false;
       _actionType = 'Time In';
     });
@@ -292,7 +290,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     _employeeIdController.dispose();
     _phoneController.dispose();
     _siteNameController.dispose();
-    _backendUrlController.dispose();
     super.dispose();
   }
 
@@ -321,6 +318,29 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // SVTI Logo Header
+                Center(
+                  child: Image.asset(
+                    'assets/svti_logo.png',
+                    height: 75,
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, error, stackTrace) => const Column(
+                      children: [
+                        Icon(Icons.business_rounded, size: 55, color: Color(0xFFE11D48)),
+                        SizedBox(height: 4),
+                        Text(
+                          'SVTI LOGISTICS',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 const Text(
                   'Record Attendance',
                   style: TextStyle(
@@ -331,16 +351,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 20),
-                TextField(
-                  controller: _backendUrlController,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Backend Server URL',
-                    labelStyle: TextStyle(color: Colors.grey),
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
                 TextField(
                   controller: _employeeIdController,
                   style: const TextStyle(color: Colors.white),
@@ -398,17 +408,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   controlAffinity: ListTileControlAffinity.leading,
                 ),
                 const SizedBox(height: 16),
-                ElevatedButton.icon(
-                  onPressed: _isLoading ? null : _getCurrentLocation,
-                  icon: const Icon(Icons.location_on),
-                  label: Text(_latitude == null
-                      ? 'Capture GPS Location'
-                      : 'GPS: ${_latitude!.toStringAsFixed(4)}, ${_longitude!.toStringAsFixed(4)}'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                  ),
-                ),
-                const SizedBox(height: 12),
                 ElevatedButton.icon(
                   onPressed: _isLoading ? null : _captureSelfie,
                   icon: const Icon(Icons.camera_alt),
