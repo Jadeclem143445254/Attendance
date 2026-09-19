@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:http/http.dart' as http;
+
+import 'web_camera.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,7 +41,6 @@ class AttendanceScreen extends StatefulWidget {
 }
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
-  // Backend server endpoint
   static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
 
   final TextEditingController _employeeIdController = TextEditingController();
@@ -49,11 +51,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? _photoBase64;
   Uint8List? _imageBytes;
   bool _isLoading = false;
-  String? _activeAction; // Tracks 'Time In' or 'Time Out' during submission
+  String? _activeAction;
   String? _statusMessage;
   bool _isSuccess = true;
 
-  /// Fetches GPS location silently with default fallback (0.0, 0.0) if permission is denied or blocked
+  /// Fetches GPS location silently with default fallback (0.0, 0.0)
   Future<Map<String, double>> _fetchCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -83,25 +85,36 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Native Camera Picker (compatible with Web and Mobile)
+  /// Selfie Capture: Uses live webcam dialog on Web link, and native camera on APK
   Future<void> _captureSelfie() async {
     try {
-      final ImagePicker picker = ImagePicker();
-      final XFile? photo = await picker.pickImage(
-        source: ImageSource.camera,
-        preferredCameraDevice: CameraDevice.front,
-        maxWidth: 800,
-        maxHeight: 800,
-        imageQuality: 85,
-      );
+      if (kIsWeb) {
+        final bytes = await openWebCamDialog(context);
+        if (bytes != null) {
+          setState(() {
+            _imageBytes = bytes;
+            _photoBase64 = base64Encode(bytes);
+          });
+          _setStatus('Selfie captured successfully!', isSuccess: true);
+        }
+      } else {
+        final ImagePicker picker = ImagePicker();
+        final XFile? photo = await picker.pickImage(
+          source: ImageSource.camera,
+          preferredCameraDevice: CameraDevice.front,
+          maxWidth: 800,
+          maxHeight: 800,
+          imageQuality: 85,
+        );
 
-      if (photo != null) {
-        final bytes = await photo.readAsBytes();
-        setState(() {
-          _imageBytes = bytes;
-          _photoBase64 = base64Encode(bytes);
-        });
-        _setStatus('Selfie captured successfully!', isSuccess: true);
+        if (photo != null) {
+          final bytes = await photo.readAsBytes();
+          setState(() {
+            _imageBytes = bytes;
+            _photoBase64 = base64Encode(bytes);
+          });
+          _setStatus('Selfie captured successfully!', isSuccess: true);
+        }
       }
     } catch (e) {
       _setStatus('Unable to access camera: $e', isSuccess: false);
@@ -120,7 +133,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       return;
     }
 
-    // Set Loading State for the selected action
     setState(() {
       _isLoading = true;
       _activeAction = actionType;
@@ -261,7 +273,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Main Input Form Container
+                  // Form Inputs
                   Container(
                     padding: const EdgeInsets.all(16.0),
                     decoration: BoxDecoration(
@@ -292,7 +304,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                         const SizedBox(height: 14),
 
-                        // Overtime Toggle Box
+                        // Overtime Checkbox
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
@@ -340,7 +352,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Selfie Camera Verification Button
+                  // Selfie Verification Button
                   InkWell(
                     onTap: _isLoading ? null : _captureSelfie,
                     borderRadius: BorderRadius.circular(12),
@@ -370,7 +382,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                   ),
 
-                  // Selfie Image Preview Box
+                  // Image Preview
                   if (_imageBytes != null) ...[
                     const SizedBox(height: 12),
                     ClipRRect(
@@ -389,7 +401,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   // Action Buttons (TIME IN / TIME OUT)
                   Row(
                     children: [
-                      // TIME IN BUTTON
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -435,7 +446,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      // TIME OUT BUTTON
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -483,7 +493,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
 
-                  // Dynamic Status Banner / Success Prompt Container
+                  // Status / Prompt Container
                   if (_statusMessage != null) ...[
                     const SizedBox(height: 16),
                     AnimatedContainer(
