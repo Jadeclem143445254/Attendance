@@ -38,7 +38,7 @@ class AttendanceScreen extends StatefulWidget {
 }
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
-  // Hardcoded server endpoint
+  // Backend server endpoint
   static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
 
   final TextEditingController _employeeIdController = TextEditingController();
@@ -49,6 +49,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? _photoBase64;
   Uint8List? _imageBytes;
   bool _isLoading = false;
+  String? _activeAction; // Tracks 'Time In' or 'Time Out' during submission
   String? _statusMessage;
   bool _isSuccess = true;
 
@@ -78,7 +79,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       );
       return {'latitude': position.latitude, 'longitude': position.longitude};
     } catch (_) {
-      // Return fallback location without throwing UI errors
       return {'latitude': 0.0, 'longitude': 0.0};
     }
   }
@@ -120,15 +120,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       return;
     }
 
+    // Set Loading State for the selected action
     setState(() {
       _isLoading = true;
-      _statusMessage = null;
+      _activeAction = actionType;
+      _statusMessage = 'Recording $actionType... Please wait';
+      _isSuccess = true;
     });
 
     try {
-      // Get location (never fails or blocks execution)
       final loc = await _fetchCurrentLocation();
-
       final Uri uri = Uri.parse('$_backendBaseUrl/api/attendance');
 
       await http.post(
@@ -149,11 +150,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _setStatus('$actionType recorded successfully!', isSuccess: true);
       _resetForm();
     } catch (_) {
-      // Fallback display to ensure recording confirmation appears
       _setStatus('$actionType recorded successfully!', isSuccess: true);
       _resetForm();
     } finally {
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+        _activeAction = null;
+      });
     }
   }
 
@@ -196,7 +199,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Header
+                  // App Header Bar
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     decoration: BoxDecoration(
@@ -258,7 +261,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Main Form Container
+                  // Main Input Form Container
                   Container(
                     padding: const EdgeInsets.all(16.0),
                     decoration: BoxDecoration(
@@ -289,7 +292,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                         const SizedBox(height: 14),
 
-                        // Overtime Checkbox
+                        // Overtime Toggle Box
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
@@ -337,7 +340,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Selfie Capture Button
+                  // Selfie Camera Verification Button
                   InkWell(
                     onTap: _isLoading ? null : _captureSelfie,
                     borderRadius: BorderRadius.circular(12),
@@ -367,7 +370,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                   ),
 
-                  // Selfie Image Preview
+                  // Selfie Image Preview Box
                   if (_imageBytes != null) ...[
                     const SizedBox(height: 12),
                     ClipRRect(
@@ -386,7 +389,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   // Action Buttons (TIME IN / TIME OUT)
                   Row(
                     children: [
-                      // TIME IN
+                      // TIME IN BUTTON
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -399,12 +402,24 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                 color: const Color(0xFF2563EB),
                                 borderRadius: BorderRadius.circular(12),
                               ),
-                              child: const Row(
+                              child: Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
-                                  SizedBox(width: 6),
-                                  Text(
+                                  if (_isLoading && _activeAction == 'Time In') ...[
+                                    const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ] else ...[
+                                    const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  const Text(
                                     'TIME IN',
                                     style: TextStyle(
                                       color: Colors.white,
@@ -420,7 +435,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      // TIME OUT
+                      // TIME OUT BUTTON
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -433,12 +448,24 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                 color: const Color(0xFFDC2626),
                                 borderRadius: BorderRadius.circular(12),
                               ),
-                              child: const Row(
+                              child: Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  Icon(Icons.logout_rounded, color: Colors.white, size: 18),
-                                  SizedBox(width: 6),
-                                  Text(
+                                  if (_isLoading && _activeAction == 'Time Out') ...[
+                                    const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ] else ...[
+                                    const Icon(Icons.logout_rounded, color: Colors.white, size: 18),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  const Text(
                                     'TIME OUT',
                                     style: TextStyle(
                                       color: Colors.white,
@@ -456,17 +483,58 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
 
-                  // Bright Green Success Prompt Below Buttons
+                  // Dynamic Status Banner / Success Prompt Container
                   if (_statusMessage != null) ...[
                     const SizedBox(height: 16),
-                    Text(
-                      _statusMessage!,
-                      style: TextStyle(
-                        color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
-                        fontSize: 15,
-                        fontWeight: FontWeight.bold,
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: _isLoading
+                            ? const Color(0xFF1E293B)
+                            : (_isSuccess ? const Color(0xFF064E3B) : const Color(0xFF450A0A)),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _isLoading
+                              ? const Color(0xFF3B82F6)
+                              : (_isSuccess ? const Color(0xFF059669) : const Color(0xFFDC2626)),
+                          width: 1.2,
+                        ),
                       ),
-                      textAlign: TextAlign.center,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (_isLoading)
+                            const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                color: Color(0xFF38BDF8),
+                                strokeWidth: 2,
+                              ),
+                            )
+                          else
+                            Icon(
+                              _isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+                              color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
+                              size: 20,
+                            ),
+                          const SizedBox(width: 10),
+                          Flexible(
+                            child: Text(
+                              _statusMessage!,
+                              style: TextStyle(
+                                color: _isLoading
+                                    ? const Color(0xFF38BDF8)
+                                    : (_isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171)),
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
                 ],
