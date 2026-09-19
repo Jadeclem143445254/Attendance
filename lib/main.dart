@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -48,7 +48,8 @@ class _AttendanceHomeScreenState extends State<AttendanceHomeScreen> {
 
   bool _isOvertime = false;
   bool _isLoading = false;
-  File? _capturedImage;
+  XFile? _capturedImage;
+  Uint8List? _capturedImageBytes;
   String _statusMessage = "";
 
   @override
@@ -74,27 +75,47 @@ class _AttendanceHomeScreenState extends State<AttendanceHomeScreen> {
   }
 
   Future<void> _takePhoto() async {
-    final picker = ImagePicker();
-    final pickedFile = await picker.pickImage(source: ImageSource.camera, imageQuality: 40);
-    if (pickedFile != null) {
+    try {
+      final picker = ImagePicker();
+      final pickedFile = await picker.pickImage(
+        source: ImageSource.camera,
+        preferredCameraDevice: CameraDevice.front,
+        imageQuality: 40,
+      );
+      if (pickedFile != null) {
+        final bytes = await pickedFile.readAsBytes();
+        setState(() {
+          _capturedImage = pickedFile;
+          _capturedImageBytes = bytes;
+        });
+      }
+    } catch (e) {
       setState(() {
-        _capturedImage = File(pickedFile.path);
+        _statusMessage = "Camera access error: $e";
       });
     }
   }
 
   Future<Position?> _getCurrentLocation() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) return null;
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return null;
 
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) return null;
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return null;
+      }
+      if (permission == LocationPermission.deniedForever) return null;
+
+      // Time limit prevents iOS Safari from freezing indefinitely
+      return await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.medium,
+        timeLimit: const Duration(seconds: 8),
+      );
+    } catch (e) {
+      return null;
     }
-    if (permission == LocationPermission.deniedForever) return null;
-
-    return await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
   }
 
   Future<void> _submitAttendance(String actionType) async {
@@ -108,43 +129,43 @@ class _AttendanceHomeScreenState extends State<AttendanceHomeScreen> {
       _statusMessage = "Recording $actionType...";
     });
 
-    await _saveUserData();
-
-    Position? position = await _getCurrentLocation();
-    double lat = position?.latitude ?? 0.0;
-    double lng = position?.longitude ?? 0.0;
-
-    String photoBase64 = "";
-    if (_capturedImage != null) {
-      List<int> imageBytes = await _capturedImage!.readAsBytes();
-      photoBase64 = base64Encode(imageBytes);
-    }
-
-    String localTimestamp = DateTime.now().toIso8601String();
-
-    Map<String, dynamic> payload = {
-      "employee_id": _nameController.text.trim(),
-      "phone_number": _phoneController.text.trim(),
-      "site_name": _siteController.text.trim(),
-      "action_type": actionType,
-      "is_overtime": _isOvertime,
-      "latitude": lat,
-      "longitude": lng,
-      "photo_base64": photoBase64,
-      "timestamp": localTimestamp
-    };
-
     try {
+      await _saveUserData();
+
+      Position? position = await _getCurrentLocation();
+      double lat = position?.latitude ?? 0.0;
+      double lng = position?.longitude ?? 0.0;
+
+      String photoBase64 = "";
+      if (_capturedImageBytes != null) {
+        photoBase64 = base64Encode(_capturedImageBytes!);
+      }
+
+      String localTimestamp = DateTime.now().toIso8601String();
+
+      Map<String, dynamic> payload = {
+        "employee_id": _nameController.text.trim(),
+        "phone_number": _phoneController.text.trim(),
+        "site_name": _siteController.text.trim(),
+        "action_type": actionType,
+        "is_overtime": _isOvertime,
+        "latitude": lat,
+        "longitude": lng,
+        "photo_base64": photoBase64,
+        "timestamp": localTimestamp
+      };
+
       final response = await http.post(
         Uri.parse(serverUrl),
         headers: {"Content-Type": "application/json"},
         body: jsonEncode(payload),
-      );
+      ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
         setState(() {
           _statusMessage = "$actionType recorded successfully!";
           _capturedImage = null;
+          _capturedImageBytes = null;
         });
       } else {
         setState(() {
@@ -153,9 +174,10 @@ class _AttendanceHomeScreenState extends State<AttendanceHomeScreen> {
       }
     } catch (e) {
       setState(() {
-        _statusMessage = "Network Connection Error: $e";
+        _statusMessage = "Network Error: $e";
       });
     } finally {
+      // Guarantees loading indicator stops on iOS Safari
       setState(() => _isLoading = false);
     }
   }
@@ -328,17 +350,17 @@ class _AttendanceHomeScreenState extends State<AttendanceHomeScreen> {
                 onPressed: _takePhoto,
                 icon: const Icon(Icons.camera_alt_outlined, color: Color(0xFF00A8FF)),
                 label: Text(
-                  _capturedImage == null ? "Take Selfie Verification" : "Retake Photo",
+                  _capturedImageBytes == null ? "Take Selfie Verification" : "Retake Photo",
                   style: const TextStyle(color: Color(0xFF00A8FF), fontWeight: FontWeight.bold, fontSize: 15),
                 ),
               ),
             ),
-            if (_capturedImage != null)
+            if (_capturedImageBytes != null)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.file(_capturedImage!, height: 140, fit: BoxFit.cover),
+                  child: Image.memory(_capturedImageBytes!, height: 140, fit: BoxFit.cover),
                 ),
               ),
             const SizedBox(height: 20),
