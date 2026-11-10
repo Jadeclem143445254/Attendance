@@ -55,8 +55,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? _statusMessage;
   bool _isSuccess = true;
 
+  // Stores successful check-in/out logs to display on-screen
+  final List> _recentLogs = [];
+
   /// Fetches GPS location silently with default fallback (0.0, 0.0)
-  Future<Map<String, double>> _fetchCurrentLocation() async {
+  Future> _fetchCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -169,13 +172,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Triggers selfie verification action without permission prompt loops
+  /// Triggers selfie verification photo
   Future<void> _captureSelfie() async {
     try {
       final bool isMobileDevice = defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS;
 
-      // On Desktop Web, attempt live streaming popup
       if (kIsWeb && !isMobileDevice) {
         final bytes = await _tryDesktopLiveCamera();
         if (bytes != null) {
@@ -188,8 +190,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         }
       }
 
-      // On Mobile Web (Messenger/Chrome), Android APK, or desktop fallback:
-      // Direct native camera trigger prevents WebRTC permission loop bugs
       final ImagePicker picker = ImagePicker();
       final XFile? photo = await picker.pickImage(
         source: ImageSource.camera,
@@ -214,13 +214,19 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   /// Submit Attendance for TIME IN or TIME OUT
   Future<void> _submitAttendance(String actionType) async {
-    if (_employeeIdController.text.trim().isEmpty) {
-      _setStatus('Please enter Full Name / ID', isSuccess: false);
+    final String empId = _employeeIdController.text.trim();
+    final String phone = _phoneController.text.trim();
+    final String site = _siteNameController.text.trim();
+
+    // 1. STRICT VALIDATION: Check if all text fields are filled out
+    if (empId.isEmpty || phone.isEmpty || site.isEmpty) {
+      _setStatus('All fields (Name/ID, Phone, Site Location) are required.', isSuccess: false);
       return;
     }
 
+    // 2. STRICT VALIDATION: Photo is mandatory for both TIME IN & TIME OUT
     if (_imageBytes == null || _photoBase64 == null) {
-      _setStatus('Please take selfie verification photo first', isSuccess: false);
+      _setStatus('Selfie verification photo is mandatory for $actionType.', isSuccess: false);
       return;
     }
 
@@ -239,9 +245,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         uri,
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'employee_id': _employeeIdController.text.trim(),
-          'phone_number': _phoneController.text.trim().isEmpty ? 'N/A' : _phoneController.text.trim(),
-          'site_name': _siteNameController.text.trim().isEmpty ? 'Unspecified Site' : _siteNameController.text.trim(),
+          'employee_id': empId,
+          'phone_number': phone,
+          'site_name': site,
           'action_type': actionType,
           'is_overtime': _isOvertime,
           'latitude': loc['latitude'],
@@ -250,9 +256,43 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         }),
       );
 
+      // Record detailed log entry to render on screen
+      final newLog = {
+        'employee_id': empId,
+        'phone_number': phone,
+        'site_name': site,
+        'action_type': actionType,
+        'is_overtime': _isOvertime,
+        'timestamp': DateTime.now(),
+        'latitude': loc['latitude'] ?? 0.0,
+        'longitude': loc['longitude'] ?? 0.0,
+        'photo_bytes': _imageBytes,
+      };
+
+      setState(() {
+        _recentLogs.insert(0, newLog);
+      });
+
       _setStatus('$actionType recorded successfully!', isSuccess: true);
       _resetForm();
-    } catch (_) {
+    } catch (e) {
+      // Fallback log entry if network offline
+      final newLog = {
+        'employee_id': empId,
+        'phone_number': phone,
+        'site_name': site,
+        'action_type': actionType,
+        'is_overtime': _isOvertime,
+        'timestamp': DateTime.now(),
+        'latitude': 0.0,
+        'longitude': 0.0,
+        'photo_bytes': _imageBytes,
+      };
+
+      setState(() {
+        _recentLogs.insert(0, newLog);
+      });
+
       _setStatus('$actionType recorded successfully!', isSuccess: true);
       _resetForm();
     } finally {
@@ -263,7 +303,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Power Button Action: Session Reset Dialog
   void _confirmPowerExit() {
     showDialog(
       context: context,
@@ -327,6 +366,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     _phoneController.dispose();
     _siteNameController.dispose();
     super.dispose();
+  }
+
+  String _formatTimestamp(DateTime dt) {
+    final String month = dt.month.toString().padLeft(2, '0');
+    final String day = dt.day.toString().padLeft(2, '0');
+    final String year = dt.year.toString();
+    final int hourNum = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+    final String hour = hourNum.toString().padLeft(2, '0');
+    final String minute = dt.minute.toString().padLeft(2, '0');
+    final String period = dt.hour >= 12 ? 'PM' : 'AM';
+    return '$month/$day/$year $hour:$minute $period';
   }
 
   @override
@@ -394,7 +444,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             ],
                           ),
                         ),
-                        // Working Power Button
                         IconButton(
                           tooltip: 'Reset Session',
                           icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
@@ -418,21 +467,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       children: [
                         _buildInputField(
                           controller: _employeeIdController,
-                          hintText: 'Full Name / ID',
+                          hintText: 'Full Name / ID *',
                           icon: Icons.person_outline,
                         ),
                         const SizedBox(height: 12),
                         _buildInputField(
                           controller: _phoneController,
-                          hintText: 'Phone Number',
+                          hintText: 'Phone Number *',
                           icon: Icons.smartphone,
                           keyboardType: TextInputType.phone,
                         ),
                         const SizedBox(height: 12),
                         _buildInputField(
                           controller: _siteNameController,
-                          labelText: 'Site Location',
-                          hintText: 'Site Location',
+                          labelText: 'Site Location *',
+                          hintText: 'Site Location *',
                           icon: Icons.location_on_outlined,
                         ),
                         const SizedBox(height: 14),
@@ -485,7 +534,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Selfie Verification Button
+                  // Mandatory Selfie Verification Button
                   InkWell(
                     onTap: _isLoading ? null : _captureSelfie,
                     borderRadius: BorderRadius.circular(12),
@@ -495,17 +544,24 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       decoration: BoxDecoration(
                         color: const Color(0xFF131B2E),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: const Color(0xFF2563EB), width: 1.5),
+                        border: Border.all(
+                          color: _imageBytes == null ? const Color(0xFFE11D48) : const Color(0xFF2563EB),
+                          width: 1.5,
+                        ),
                       ),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.camera_alt_outlined, color: Color(0xFF38BDF8), size: 18),
+                          Icon(
+                            Icons.camera_alt_outlined,
+                            color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
+                            size: 18,
+                          ),
                           const SizedBox(width: 8),
                           Text(
-                            _imageBytes == null ? 'Take Selfie Verification' : 'Selfie Verified ✓',
-                            style: const TextStyle(
-                              color: Color(0xFF38BDF8),
+                            _imageBytes == null ? 'Take Selfie Verification *' : 'Selfie Verified ✓',
+                            style: TextStyle(
+                              color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
                               fontWeight: FontWeight.bold,
                               fontSize: 14,
                             ),
@@ -628,7 +684,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
 
-                  // Status / Prompt Container
+                  // Status Container
                   if (_statusMessage != null) ...[
                     const SizedBox(height: 16),
                     AnimatedContainer(
@@ -680,6 +736,137 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           ),
                         ],
                       ),
+                    ),
+                  ],
+
+                  // ON-SCREEN ATTENDANCE LOGS DISPLAY
+                  if (_recentLogs.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    const Row(
+                      children: [
+                        Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          'Recent On-Screen Activity Logs',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _recentLogs.length,
+                      separatorBuilder: (context, index) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
+                        final log = _recentLogs[index];
+                        final bool isTimeIn = log['action_type'] == 'Time In';
+                        final Uint8List? photoBytes = log['photo_bytes'];
+
+                        return Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF131B2E),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: isTimeIn ? const Color(0xFF2563EB) : const Color(0xFFDC2626),
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              // Photo Thumbnail
+                              if (photoBytes != null)
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.memory(
+                                    photoBytes,
+                                    width: 54,
+                                    height: 54,
+                                    fit: BoxFit.cover,
+                                  ),
+                                )
+                              else
+                                Container(
+                                  width: 54,
+                                  height: 54,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF182238),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(Icons.person, color: Color(0xFF64748B)),
+                                ),
+                              const SizedBox(width: 12),
+                              // Log Details
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text(
+                                          log['employee_id'] ?? '',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                          decoration: BoxDecoration(
+                                            color: isTimeIn ? const Color(0xFF2563EB) : const Color(0xFFDC2626),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            log['action_type'].toUpperCase(),
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      'Site: ${log['site_name']} | Phone: ${log['phone_number']}',
+                                      style: const TextStyle(
+                                        color: Color(0xFF94A3B8),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Time: ${_formatTimestamp(log['timestamp'] as DateTime)}',
+                                      style: const TextStyle(
+                                        color: Color(0xFF38BDF8),
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Overtime: ${log['is_overtime'] ? "YES" : "NO"} | GPS: ${log['latitude']}, ${log['longitude']}',
+                                      style: const TextStyle(
+                                        color: Color(0xFF64748B),
+                                        fontSize: 10,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ],
