@@ -8,15 +8,50 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:gal/gal.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 
+import 'gallery_saver_web.dart'
+    if (dart.library.io) 'gallery_saver_mobile.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const AttendanceApp());
+}
+
+class GpsCoords {
+  final double latitude;
+  final double longitude;
+
+  const GpsCoords(this.latitude, this.longitude);
+}
+
+class AttendanceRecord {
+  final String employeeId;
+  final String phoneNumber;
+  final String siteName;
+  final String actionType;
+  final bool isOvertime;
+  final DateTime timestamp;
+  final double latitude;
+  final double longitude;
+  final String googleLocation;
+  final Uint8List? photoBytes;
+
+  const AttendanceRecord({
+    required this.employeeId,
+    required this.phoneNumber,
+    required this.siteName,
+    required this.actionType,
+    required this.isOvertime,
+    required this.timestamp,
+    required this.latitude,
+    required this.longitude,
+    required this.googleLocation,
+    this.photoBytes,
+  });
 }
 
 class AttendanceApp extends StatelessWidget {
@@ -71,8 +106,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String _liveDateText = 'Loading Philippine Time...';
 
   // Post-submission receipt + geolocation map data (hidden on standby)
-  Map<String, dynamic>? _latestReceipt;
-  final List> _recentLogs = [];
+  AttendanceRecord? _latestReceipt;
+  final List<AttendanceRecord> _recentLogs = [];
 
   static const List<String> _weekdays = [
     'Monday',
@@ -116,10 +151,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           .get(Uri.parse('$_backendBaseUrl/api/server-time'))
           .timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final dynamic data = jsonDecode(res.body);
         final int t1 = DateTime.now().millisecondsSinceEpoch;
         final int rttHalf = ((t1 - t0) / 2).round();
-        if (data['epoch_ms'] != null && mounted) {
+        if (data is Map && data['epoch_ms'] != null && mounted) {
           setState(() {
             _serverOffsetMs = (data['epoch_ms'] as int) + rttHalf - t1;
           });
@@ -156,18 +191,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     if (mounted) {
       setState(() {
-        _liveClockText = '$hh:$mm:$ss$period';
-        _liveDateText = '$weekday,$month $day,$year • PHT (UTC+8)';
+        _liveClockText = '$hh:$mm:$ss $period';
+        _liveDateText = '$weekday, $month $day, $year • PHT (UTC+8)';
       });
     }
   }
 
   /// Fetches high-accuracy GPS coordinates for geofence & post-submission map
-  Future> _fetchCurrentLocation() async {
+  Future<GpsCoords> _fetchCurrentLocation() async {
     try {
       final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        return {'latitude': 0.0, 'longitude': 0.0};
+        return const GpsCoords(0.0, 0.0);
       }
 
       LocationPermission permission = await Geolocator.checkPermission();
@@ -175,12 +210,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied ||
             permission == LocationPermission.deniedForever) {
-          return {'latitude': 0.0, 'longitude': 0.0};
+          return const GpsCoords(0.0, 0.0);
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
-        return {'latitude': 0.0, 'longitude': 0.0};
+        return const GpsCoords(0.0, 0.0);
       }
 
       final Position position = await Geolocator.getCurrentPosition(
@@ -189,15 +224,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           timeLimit: Duration(seconds: 6),
         ),
       );
-      return {'latitude': position.latitude, 'longitude': position.longitude};
+      return GpsCoords(position.latitude, position.longitude);
     } catch (_) {
       try {
         final Position? lastPos = await Geolocator.getLastKnownPosition();
         if (lastPos != null) {
-          return {'latitude': lastPos.latitude, 'longitude': lastPos.longitude};
+          return GpsCoords(lastPos.latitude, lastPos.longitude);
         }
       } catch (_) {}
-      return {'latitude': 0.0, 'longitude': 0.0};
+      return const GpsCoords(0.0, 0.0);
     }
   }
 
@@ -216,53 +251,57 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       ).timeout(const Duration(seconds: 5));
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final address = data['address'] as Map<String, dynamic>?;
-        if (address != null) {
-          final List<String> parts = [];
-          final String? place = (data['name'] ??
-                  address['building'] ??
-                  address['amenity'] ??
-                  address['shop'])
-              ?.toString();
-          final String? road = address['road']?.toString();
-          final String? suburb = (address['suburb'] ??
-                  address['neighbourhood'] ??
-                  address['village'] ??
-                  address['quarter'])
-              ?.toString();
-          final String? city = (address['city'] ??
-                  address['town'] ??
-                  address['municipality'] ??
-                  address['county'])
-              ?.toString();
-          final String? state =
-              (address['state'] ?? address['region'])?.toString();
+        final dynamic data = jsonDecode(response.body);
+        if (data is Map) {
+          final dynamic address = data['address'];
+          if (address is Map) {
+            final List<String> parts = [];
+            final String? place = (data['name'] ??
+                    address['building'] ??
+                    address['amenity'] ??
+                    address['shop'])
+                ?.toString();
+            final String? road = address['road']?.toString();
+            final String? suburb = (address['suburb'] ??
+                    address['neighbourhood'] ??
+                    address['village'] ??
+                    address['quarter'])
+                ?.toString();
+            final String? city = (address['city'] ??
+                    address['town'] ??
+                    address['municipality'] ??
+                    address['county'])
+                ?.toString();
+            final String? state =
+                (address['state'] ?? address['region'])?.toString();
 
-          if (place != null && place.isNotEmpty) parts.add(place);
-          if (road != null && road.isNotEmpty && !parts.contains(road)) {
-            parts.add(road);
-          }
-          if (suburb != null && suburb.isNotEmpty && !parts.contains(suburb)) {
-            parts.add(suburb);
-          }
-          if (city != null && city.isNotEmpty && !parts.contains(city)) {
-            parts.add(city);
-          }
-          if (state != null && state.isNotEmpty && !parts.contains(state)) {
-            parts.add(state);
-          }
+            if (place != null && place.isNotEmpty) parts.add(place);
+            if (road != null && road.isNotEmpty && !parts.contains(road)) {
+              parts.add(road);
+            }
+            if (suburb != null &&
+                suburb.isNotEmpty &&
+                !parts.contains(suburb)) {
+              parts.add(suburb);
+            }
+            if (city != null && city.isNotEmpty && !parts.contains(city)) {
+              parts.add(city);
+            }
+            if (state != null && state.isNotEmpty && !parts.contains(state)) {
+              parts.add(state);
+            }
 
-          if (parts.isNotEmpty) {
-            return parts.join(', ');
+            if (parts.isNotEmpty) {
+              return parts.join(', ');
+            }
           }
-        }
-        if (data['display_name'] != null) {
-          return data['display_name'].toString();
+          if (data['display_name'] != null) {
+            return data['display_name'].toString();
+          }
         }
       }
     } catch (_) {}
-    return 'Lat ${lat.toStringAsFixed(6)}, Lng${lng.toStringAsFixed(6)}';
+    return 'Lat ${lat.toStringAsFixed(6)}, Lng ${lng.toStringAsFixed(6)}';
   }
 
   /// Desktop fallback camera preview (for browser testing)
@@ -416,7 +455,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Captures the post-submission receipt card as PNG and saves to device gallery
+  /// Captures the post-submission receipt card as PNG and saves to gallery/browser
   Future<void> _captureAndSaveScreenshot(
     String empId,
     String actionType,
@@ -451,18 +490,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       final int ts = DateTime.now().millisecondsSinceEpoch;
       final String fileName = 'SVTI_${cleanAction}_${cleanId}_$ts';
 
-      final bool hasAccess = await Gal.hasAccess();
-      if (!hasAccess) {
-        await Gal.requestAccess();
-      }
-      await Gal.putImageBytes(pngBytes, name: fileName);
+      await saveReceiptToGallery(pngBytes, fileName);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             backgroundColor: const Color(0xFF065F46),
             content: Text(
-              'Attendance receipt saved to Gallery ($fileName.png)',
+              'Attendance receipt saved ($fileName.png)',
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
@@ -518,7 +553,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           ],
         ),
         content: Text(
-          'Save a PNG receipt of your $actionType with your GPS map and timestamp to your phone gallery?',
+          'Save a PNG receipt of your $actionType with your GPS map and timestamp to your gallery?',
           style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
         ),
         actions: [
@@ -560,7 +595,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   /// Submits strict case-sensitive attendance payload to backend
   Future<void> _submitAttendance(String actionType) async {
-    // Preserve exact case-sensitivity (trim outer whitespace only)
     final String empId = _employeeIdController.text.trim();
     final String phone = _phoneController.text.trim();
     final String site = _siteNameController.text.trim();
@@ -594,9 +628,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     });
 
     try {
-      final Map<String, double> loc = await _fetchCurrentLocation();
-      final double lat = loc['latitude'] ?? 0.0;
-      final double lng = loc['longitude'] ?? 0.0;
+      final GpsCoords loc = await _fetchCurrentLocation();
+      final double lat = loc.latitude;
+      final double lng = loc.longitude;
 
       final Uri uri = Uri.parse('$_backendBaseUrl/api/attendance');
       final response = await http
@@ -616,13 +650,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           )
           .timeout(const Duration(seconds: 15));
 
-      Map<String, dynamic> respData = {};
+      dynamic respData;
       try {
-        respData = jsonDecode(response.body) as Map<String, dynamic>;
+        respData = jsonDecode(response.body);
       } catch (_) {}
 
-      if (response.statusCode == 200 &&
-          (respData['success'] == true || respData['status'] == 'success')) {
+      final bool okFlag = respData is Map &&
+          (respData['success'] == true || respData['status'] == 'success');
+
+      if (response.statusCode == 200 && okFlag) {
         final String resolvedAddress =
             (respData['location_name'] ?? respData['address'])?.toString() ??
                 await _resolveGoogleLocationName(lat, lng);
@@ -633,18 +669,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         final String verifiedSite =
             (respData['site_name'] ?? site).toString();
 
-        final Map<String, dynamic> newLog = {
-          'employee_id': verifiedEmpId,
-          'phone_number': phone,
-          'site_name': verifiedSite,
-          'action_type': actionType,
-          'is_overtime': _isOvertime,
-          'timestamp': submittedAt,
-          'latitude': lat,
-          'longitude': lng,
-          'google_location': resolvedAddress,
-          'photo_bytes': _imageBytes,
-        };
+        final AttendanceRecord newLog = AttendanceRecord(
+          employeeId: verifiedEmpId,
+          phoneNumber: phone,
+          siteName: verifiedSite,
+          actionType: actionType,
+          isOvertime: _isOvertime,
+          timestamp: submittedAt,
+          latitude: lat,
+          longitude: lng,
+          googleLocation: resolvedAddress,
+          photoBytes: _imageBytes,
+        );
 
         setState(() {
           _latestReceipt = newLog;
@@ -659,11 +695,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _resetForm();
         _promptSaveScreenshot(verifiedEmpId, actionType);
       } else {
-        final String errMsg = (respData['error'] ??
-                respData['message'] ??
-                respData['detail'] ??
-                'Submission rejected by server (HTTP ${response.statusCode}). Check exact case-sensitive spelling and site geofence.')
-            .toString();
+        final String errMsg = (respData is Map
+                ? (respData['error'] ??
+                    respData['message'] ??
+                    respData['detail'])
+                : null)
+            ?.toString() ??
+            'Submission rejected by server (HTTP ${response.statusCode}). Check exact case-sensitive spelling and site geofence.';
         _setStatus(errMsg, isSuccess: false);
       }
     } catch (e) {
@@ -778,7 +816,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final String minute = dt.minute.toString().padLeft(2, '0');
     final String second = dt.second.toString().padLeft(2, '0');
     final String period = dt.hour >= 12 ? 'PM' : 'AM';
-    return '$month/$day/$year $hour:$minute:$second$period PHT';
+    return '$month/$day/$year $hour:$minute:$second $period PHT';
   }
 
   Widget _buildInputField({
@@ -821,14 +859,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  Widget _buildPostSubmissionReceiptCard(Map<String, dynamic> receipt) {
-    final bool isTimeIn = receipt['action_type'] == 'Time In';
-    final double lat = (receipt['latitude'] as num?)?.toDouble() ?? 0.0;
-    final double lng = (receipt['longitude'] as num?)?.toDouble() ?? 0.0;
+  Widget _buildPostSubmissionReceiptCard(AttendanceRecord receipt) {
+    final bool isTimeIn = receipt.actionType == 'Time In';
+    final double lat = receipt.latitude;
+    final double lng = receipt.longitude;
     final bool hasValidGps = lat != 0.0 || lng != 0.0;
-    final Uint8List? photoBytes = receipt['photo_bytes'] as Uint8List?;
-    final String googleLocation =
-        (receipt['google_location'] ?? 'Location Verified').toString();
+    final Uint8List? photoBytes = receipt.photoBytes;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -865,7 +901,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
-                        '${(receipt['action_type'] ?? '').toString().toUpperCase()} VERIFIED',
+                        '${receipt.actionType.toUpperCase()} VERIFIED',
                         style: TextStyle(
                           color: isTimeIn
                               ? const Color(0xFF60A5FA)
@@ -878,7 +914,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                     const Spacer(),
                     Text(
-                      receipt['is_overtime'] == true ? 'OVERTIME' : 'REGULAR',
+                      receipt.isOvertime ? 'OVERTIME' : 'REGULAR',
                       style: const TextStyle(
                         color: Color(0xFF38BDF8),
                         fontSize: 11,
@@ -908,7 +944,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            (receipt['employee_id'] ?? '').toString(),
+                            receipt.employeeId,
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 15,
@@ -917,7 +953,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           ),
                           const SizedBox(height: 3),
                           Text(
-                            'Site: ${receipt['site_name']}',
+                            'Site: ${receipt.siteName}',
                             style: const TextStyle(
                               color: Color(0xFFCBD5E1),
                               fontSize: 12,
@@ -925,7 +961,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            _formatTimestamp(receipt['timestamp'] as DateTime),
+                            _formatTimestamp(receipt.timestamp),
                             style: const TextStyle(
                               color: Color(0xFF38BDF8),
                               fontSize: 11,
@@ -966,7 +1002,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            googleLocation,
+                            receipt.googleLocation,
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 12,
@@ -976,7 +1012,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           if (hasValidGps) ...[
                             const SizedBox(height: 2),
                             Text(
-                              'GPS: ${lat.toStringAsFixed(6)},${lng.toStringAsFixed(6)}',
+                              'GPS: ${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}',
                               style: const TextStyle(
                                 color: Color(0xFF64748B),
                                 fontSize: 10,
@@ -1049,8 +1085,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           onPressed: _isSavingReceipt
               ? null
               : () => _captureAndSaveScreenshot(
-                    (receipt['employee_id'] ?? 'Employee').toString(),
-                    (receipt['action_type'] ?? 'Attendance').toString(),
+                    receipt.employeeId,
+                    receipt.actionType,
                   ),
           icon: const Icon(Icons.photo_library_outlined, size: 18),
           label: Text(
@@ -1290,3 +1326,326 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                   InkWell(
                     onTap: _isLoading ? null : _captureSelfie,
                     borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF131B2E),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _imageBytes == null
+                              ? const Color(0xFFE11D48)
+                              : const Color(0xFF2563EB),
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.camera_alt_outlined,
+                            color: _imageBytes == null
+                                ? const Color(0xFFF43F5E)
+                                : const Color(0xFF38BDF8),
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            _imageBytes == null
+                                ? 'Take Selfie Verification *'
+                                : 'Selfie Verified ✓ (Tap to Retake)',
+                            style: TextStyle(
+                              color: _imageBytes == null
+                                  ? const Color(0xFFF43F5E)
+                                  : const Color(0xFF38BDF8),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Selfie Preview
+                  if (_imageBytes != null) ...[
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        _imageBytes!,
+                        height: 150,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 14),
+
+                  // TIME IN & TIME OUT Action Buttons
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isLoading
+                                ? null
+                                : () => _submitAttendance('Time In'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2563EB),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  if (_isLoading &&
+                                      _activeAction == 'Time In') ...[
+                                    const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ] else ...[
+                                    const Icon(
+                                      Icons.arrow_forward_rounded,
+                                      color: Colors.white,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  const Text(
+                                    'TIME IN',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isLoading
+                                ? null
+                                : () => _submitAttendance('Time Out'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFDC2626),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  if (_isLoading &&
+                                      _activeAction == 'Time Out') ...[
+                                    const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ] else ...[
+                                    const Icon(
+                                      Icons.logout_rounded,
+                                      color: Colors.white,
+                                      size: 18,
+                                    ),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  const Text(
+                                    'TIME OUT',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  // Server Status & Error Diagnostics Banner
+                  if (_statusMessage != null) ...[
+                    const SizedBox(height: 14),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 250),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _isLoading
+                            ? const Color(0xFF1E293B)
+                            : (_isSuccess
+                                ? const Color(0xFF064E3B)
+                                : const Color(0xFF450A0A)),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _isLoading
+                              ? const Color(0xFF3B82F6)
+                              : (_isSuccess
+                                  ? const Color(0xFF059669)
+                                  : const Color(0xFFDC2626)),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (_isLoading)
+                            const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                color: Color(0xFF38BDF8),
+                                strokeWidth: 2,
+                              ),
+                            )
+                          else
+                            Icon(
+                              _isSuccess
+                                  ? Icons.check_circle_rounded
+                                  : Icons.error_outline_rounded,
+                              color: _isSuccess
+                                  ? const Color(0xFF34D399)
+                                  : const Color(0xFFF87171),
+                              size: 20,
+                            ),
+                          const SizedBox(width: 10),
+                          Flexible(
+                            child: Text(
+                              _statusMessage!,
+                              style: TextStyle(
+                                color: _isLoading
+                                    ? const Color(0xFF38BDF8)
+                                    : (_isSuccess
+                                        ? const Color(0xFF34D399)
+                                        : const Color(0xFFF87171)),
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  // Post-Submission Receipt + Street Map (Hidden on Standby)
+                  if (_latestReceipt != null) ...[
+                    const SizedBox(height: 18),
+                    _buildPostSubmissionReceiptCard(_latestReceipt!),
+                  ],
+
+                  // Recent Session Activity Logs
+                  if (_recentLogs.length > 1) ...[
+                    const SizedBox(height: 20),
+                    const Row(
+                      children: [
+                        Icon(
+                          Icons.history_rounded,
+                          color: Color(0xFF38BDF8),
+                          size: 18,
+                        ),
+                        SizedBox(width: 8),
+                        Text(
+                          'Earlier Session Submissions',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _recentLogs.length - 1,
+                      separatorBuilder: (context, index) =>
+                          const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final log = _recentLogs[index + 1];
+                        final bool isTimeIn = log.actionType == 'Time In';
+                        return Container(
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF131B2E),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: isTimeIn
+                                  ? const Color(0xFF2563EB)
+                                  : const Color(0xFFDC2626),
+                              width: 1,
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      '${log.employeeId} • ${log.actionType.toUpperCase()}',
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      '${log.siteName} • ${_formatTimestamp(log.timestamp)}',
+                                      style: const TextStyle(
+                                        color: Color(0xFF94A3B8),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
