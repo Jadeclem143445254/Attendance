@@ -23,6 +23,27 @@ jobs:
         with:
           channel: 'stable'
 
+      - name: Upgrade Android Gradle files to declarative format
+        run: |
+          rm -rf android
+          flutter create . --platforms=android --project-name svti_mobile
+          python3 - << 'EOF'
+          path = "android/app/src/main/AndroidManifest.xml"
+          with open(path, "r") as f:
+              content = f.read()
+          perms = (
+              '    <uses-permission android:name="android.permission.INTERNET"/>\n'
+              '    <uses-permission android:name="android.permission.CAMERA"/>\n'
+              '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>\n'
+              '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>\n'
+              '    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29"/>\n'
+          )
+          if "ACCESS_FINE_LOCATION" not in content:
+              content = content.replace("<application", perms + "    <application", 1)
+          with open(path, "w") as f:
+              f.write(content)
+          EOF
+
       - name: Install dependencies
         run: flutter pub get
 
