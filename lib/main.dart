@@ -1,12 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
+import 'package:gal/gal.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,6 +49,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   // Backend server endpoint
   static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
 
+  // Key used to capture the screen receipt as a PNG screenshot
+  final GlobalKey _screenBoundaryKey = GlobalKey();
+
   final TextEditingController _employeeIdController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _siteNameController = TextEditingController();
@@ -59,13 +67,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   String? _statusMessage;
   bool _isSuccess = true;
 
-  // Live Digital Clock synced with SVTI Server (Philippine Time UTC+8)
+  // Live Real-Time Digital Clock & Date synced with SVTI Server (Philippine Time UTC+8)
   Timer? _clockTimer;
   int _serverOffsetMs = 0;
+  bool _isServerTimeSynced = false;
   String _liveClockText = '--:--:-- --';
+  String _liveDateText = '---, --- --, ----';
+
+  // Post-Submission Geolocation Map & Google Location (hidden during Standby Mode)
+  bool _showGeolocationCard = false;
+  double _verifiedLat = 0.0;
+  double _verifiedLng = 0.0;
+  String _resolvedGoogleLocation = '';
 
   // Session logs (accessible via header icon so main screen stays 1-page)
   final List> _recentLogs = [];
+
+  static const List<String> _weekdays = [
+    'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'
+  ];
+  static const List<String> _months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  // Dark-mode color filter for OpenStreetMap tiles
+  static const ColorFilter _darkMapFilter = ColorFilter.matrix(<double>[
+    -0.85, 0.0,   0.0,   0.0, 235.0,
+    0.0,   -0.85, 0.0,   0.0, 240.0,
+    0.0,   0.0,   -0.75, 0.0, 250.0,
+    0.0,   0.0,   0.0,   1.0, 0.0,
+  ]);
 
   @override
   void initState() {
@@ -90,6 +122,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         if (data['epoch_ms'] != null && mounted) {
           setState(() {
             _serverOffsetMs = (data['epoch_ms'] as int) + rttHalf - t1;
+            _isServerTimeSynced = true;
           });
           _updateClockDisplay();
         }
@@ -113,14 +146,19 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final String ss = manilaNow.second.toString().padLeft(2, '0');
     final String period = manilaNow.hour >= 12 ? 'PM' : 'AM';
 
+    final String dayName = _weekdays[manilaNow.weekday - 1];
+    final String monthName = _months[manilaNow.month - 1];
+    final String dayNum = manilaNow.day.toString().padLeft(2, '0');
+
     if (mounted) {
       setState(() {
         _liveClockText = '$hh:$mm:$ss $period';
+        _liveDateText = '$dayName, $monthName $dayNum, ${manilaNow.year}';
       });
     }
   }
 
-  /// Fetches high-accuracy GPS coordinates for server geofence check
+  /// Fetches high-accuracy GPS coordinates for server geofence check & map
   Future> _fetchCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -155,6 +193,88 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       } catch (_) {}
       return {'latitude': 0.0, 'longitude': 0.0};
     }
+  }
+
+  /// Converts GPS position into a human-readable Google Location name (zero coordinates shown)
+  Future<String> _resolveGoogleLocationName(
+    double lat,
+    double lng,
+    String fallbackSite,
+  ) async {
+    if (lat == 0.0 && lng == 0.0) {
+      return fallbackSite;
+    }
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$lat&lon=$lng&zoom=17&addressdetails=1',
+      );
+      final res = await http
+          .get(
+            uri,
+            headers: {
+              'User-Agent': 'SVTIMobileAttendanceApp/1.0',
+              'Accept-Language': 'en',
+            },
+          )
+          .timeout(const Duration(seconds: 4));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data is Map<String, dynamic>) {
+          final addr = data['address'];
+          if (addr is Map<String, dynamic>) {
+            final List<String> parts = [];
+            final street = (addr['road'] ??
+                    addr['pedestrian'] ??
+                    addr['suburb'] ??
+                    '')
+                .toString()
+                .trim();
+            final area = (addr['neighbourhood'] ??
+                    addr['village'] ??
+                    addr['barangay'] ??
+                    addr['town'] ??
+                    '')
+                .toString()
+                .trim();
+            final city = (addr['city'] ??
+                    addr['municipality'] ??
+                    addr['county'] ??
+                    '')
+                .toString()
+                .trim();
+            final province =
+                (addr['state'] ?? addr['region'] ?? '').toString().trim();
+
+            if (street.isNotEmpty) parts.add(street);
+            if (area.isNotEmpty && !parts.contains(area)) parts.add(area);
+            if (city.isNotEmpty && !parts.contains(city)) parts.add(city);
+            if (province.isNotEmpty &&
+                !parts.contains(province) &&
+                parts.length < 3) {
+              parts.add(province);
+            }
+
+            if (parts.isNotEmpty) {
+              return parts.join(', ');
+            }
+          }
+          final displayName = (data['display_name'] ?? '').toString().trim();
+          if (displayName.isNotEmpty) {
+            final segments = displayName
+                .split(',')
+                .map((s) => s.trim())
+                .where((s) => s.isNotEmpty)
+                .take(3)
+                .toList();
+            if (segments.isNotEmpty) {
+              return segments.join(', ');
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    return fallbackSite;
   }
 
   /// Desktop Live Camera stream (for PC web browsers)
@@ -295,6 +415,125 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
+  /// Captures the clean confirmation screen (including Map & Google Location) and saves to gallery
+  Future<void> _captureAndSaveScreenshot(String empId, String actionType) async {
+    try {
+      await Future.delayed(const Duration(milliseconds: 280));
+      if (!mounted) return;
+
+      final boundary = _screenBoundaryKey.currentContext?.findRenderObject()
+          as RenderRepaintBoundary?;
+      if (boundary == null) {
+        _setStatus(
+          title: 'Screenshot Failed',
+          message: 'Unable to capture screen image. Please take a manual screenshot.',
+          isSuccess: false,
+        );
+        return;
+      }
+
+      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
+      final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (byteData == null) {
+        _setStatus(
+          title: 'Screenshot Failed',
+          message: 'Could not encode screenshot image.',
+          isSuccess: false,
+        );
+        return;
+      }
+
+      final Uint8List pngBytes = byteData.buffer.asUint8List();
+      final String safeEmp = empId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      final String safeAction = actionType.replaceAll(' ', '_');
+      final String ts = DateTime.now().millisecondsSinceEpoch.toString();
+      final String fileName = 'SVTI_${safeEmp}_${safeAction}_$ts';
+
+      if (kIsWeb) {
+        final xFile = XFile.fromData(
+          pngBytes,
+          mimeType: 'image/png',
+          name: '$fileName.png',
+        );
+        await xFile.saveTo('$fileName.png');
+      } else {
+        await Gal.putImageBytes(pngBytes, name: fileName);
+      }
+
+      if (mounted) {
+        _setStatus(
+          title: 'Screenshot Saved',
+          message: 'Attendance receipt with map & Google Location saved to your phone gallery.',
+          isSuccess: true,
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        _setStatus(
+          title: 'Save Screenshot Error',
+          message: 'Could not save screenshot ($e). Please allow Photos/Storage permission.',
+          isSuccess: false,
+        );
+      }
+    }
+  }
+
+  /// Asks the user if they want to save a screenshot after successful Time In/Out
+  Future<void> _promptSaveScreenshot(String empId, String actionType) async {
+    if (!mounted) return;
+
+    final bool? shouldSave = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF131B2E),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Row(
+            children: [
+              Icon(Icons.screenshot_rounded, color: Color(0xFF38BDF8), size: 22),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Save Screenshot Record?',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Your $actionType, map, and Google Location have been verified. Would you like to save a screenshot on your mobile phone for your personal record?',
+            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13, height: 1.4),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('No, Skip', style: TextStyle(color: Color(0xFF94A3B8))),
+            ),
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF2563EB),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              icon: const Icon(Icons.download_rounded, color: Colors.white, size: 17),
+              label: const Text(
+                'Save Screenshot',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldSave == true) {
+      await _captureAndSaveScreenshot(empId, actionType);
+    }
+    _resetForm();
+  }
+
   /// Extracts a human-readable explanation from any server HTTP response
   String _parseServerError(int statusCode, String rawBody) {
     String serverReason = '';
@@ -311,7 +550,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             .trim();
       }
     } catch (_) {
-      // Response is not JSON (e.g., HTML error page or plain text)
       final cleaned = rawBody.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
       if (cleaned.isNotEmpty) {
         serverReason = cleaned.length > 140 ? '${cleaned.substring(0, 140)}...' : cleaned;
@@ -380,6 +618,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     setState(() {
       _isLoading = true;
       _activeAction = actionType;
+      _showGeolocationCard = false;
       _statusTitle = 'Submitting $actionType...';
       _statusMessage = 'Verifying GPS location and sending record to SVTI server...';
       _isSuccess = true;
@@ -387,6 +626,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     try {
       final loc = await _fetchCurrentLocation();
+      final double lat = loc['latitude'] ?? 0.0;
+      final double lng = loc['longitude'] ?? 0.0;
       final Uri uri = Uri.parse('$_backendBaseUrl/api/attendance');
 
       final response = await http
@@ -394,13 +635,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             uri,
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
-              'employee_id': empId, // Exact case preserved
-              'phone_number': phone, // Exact case preserved
-              'site_name': site, // Exact case preserved
+              'employee_id': empId,
+              'phone_number': phone,
+              'site_name': site,
               'action_type': actionType,
               'is_overtime': _isOvertime,
-              'latitude': loc['latitude'],
-              'longitude': loc['longitude'],
+              'latitude': lat,
+              'longitude': lng,
               'photo_base64': _photoBase64 ?? '',
             }),
           )
@@ -420,29 +661,43 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           respData['error'] == null;
 
       if (serverAccepted) {
+        final String googleLocName = await _resolveGoogleLocationName(
+          lat,
+          lng,
+          respData['site_name']?.toString() ?? site,
+        );
+
         final newLog = {
           'employee_id': respData['employee_id'] ?? empId,
           'phone_number': phone,
           'site_name': respData['site_name'] ?? site,
+          'google_location': googleLocName,
           'action_type': actionType,
           'is_overtime': _isOvertime,
           'timestamp': DateTime.now(),
-          'latitude': loc['latitude'] ?? 0.0,
-          'longitude': loc['longitude'] ?? 0.0,
           'photo_bytes': _imageBytes,
         };
 
         setState(() {
           _recentLogs.insert(0, newLog);
+          _isLoading = false;
+          _activeAction = null;
+          _verifiedLat = lat;
+          _verifiedLng = lng;
+          _resolvedGoogleLocation = googleLocName;
+          _showGeolocationCard = true; // Reveal Geolocation Map & Google Location only after valid In/Out
         });
 
         _setStatus(
           title: '$actionType Recorded',
           message: respData['message']?.toString() ??
-              '$actionType verified for "$empId" at "$site".',
+              '$actionType verified for "$empId" at "$site" ($_liveDateText • $_liveClockText).',
           isSuccess: true,
         );
-        _resetForm();
+
+        // Allow map tiles a moment to paint, then prompt user to save screenshot
+        await Future.delayed(const Duration(milliseconds: 450));
+        await _promptSaveScreenshot(empId, actionType);
       } else {
         final String detailedReason = _parseServerError(response.statusCode, response.body);
         _setStatus(
@@ -584,6 +839,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                   '${log['site_name']} • ${_formatTimestamp(log['timestamp'] as DateTime)}',
                                   style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
                                 ),
+                                if ((log['google_location'] ?? '').toString().isNotEmpty)
+                                  Text(
+                                    'Google Location: ${log['google_location']}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(color: Color(0xFF38BDF8), fontSize: 10.5),
+                                  ),
                               ],
                             ),
                           ),
@@ -616,6 +878,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       _photoBase64 = null;
       _imageBytes = null;
       _isOvertime = false;
+      _showGeolocationCard = false; // Return to Standby Mode (map hidden)
+      _resolvedGoogleLocation = '';
     });
   }
 
@@ -646,7 +910,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     TextInputAction textInputAction = TextInputAction.next,
   }) {
     return SizedBox(
-      height: 44,
+      height: 41,
       child: TextField(
         controller: controller,
         keyboardType: keyboardType,
@@ -654,15 +918,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         textCapitalization: TextCapitalization.none,
         autocorrect: false,
         enableSuggestions: false,
-        style: const TextStyle(color: Colors.white, fontSize: 13.5),
+        style: const TextStyle(color: Colors.white, fontSize: 13),
         decoration: InputDecoration(
           hintText: hintText,
-          hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 12.5),
-          prefixIcon: Icon(icon, color: const Color(0xFF38BDF8), size: 18),
-          prefixIconConstraints: const BoxConstraints(minWidth: 38),
+          hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
+          prefixIcon: Icon(icon, color: const Color(0xFF38BDF8), size: 17),
+          prefixIconConstraints: const BoxConstraints(minWidth: 36),
           filled: true,
           fillColor: const Color(0xFF182238),
-          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(10),
             borderSide: const BorderSide(color: Color(0xFF1E293B)),
@@ -680,450 +944,682 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF090D16),
-      body: SafeArea(
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            return SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 10.0),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  minHeight: constraints.maxHeight - 20.0,
-                ),
-                child: Center(
-                  child: Container(
-                    constraints: const BoxConstraints(maxWidth: 420),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        // 1. COMPACT HEADER
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF131B2E),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: const Color(0xFF1E293B)),
-                          ),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 40,
-                                height: 40,
-                                padding: const EdgeInsets.all(4),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(9),
-                                ),
-                                child: Image.asset(
-                                  'assets/svti_logo.png',
-                                  fit: BoxFit.contain,
-                                  errorBuilder: (context, error, stackTrace) => const Icon(
-                                    Icons.business_rounded,
-                                    color: Color(0xFF2563EB),
-                                    size: 24,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 10),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'SVTI Mobile',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 1),
-                                    Text(
-                                      _liveClockText,
-                                      style: const TextStyle(
-                                        color: Color(0xFF38BDF8),
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                        fontFamily: 'monospace',
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              if (_recentLogs.isNotEmpty)
-                                IconButton(
-                                  tooltip: 'Session Logs (${_recentLogs.length})',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                                  icon: Badge(
-                                    label: Text('${_recentLogs.length}'),
-                                    backgroundColor: const Color(0xFF2563EB),
-                                    child: const Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 22),
-                                  ),
-                                  onPressed: _showSessionLogsModal,
-                                ),
-                              IconButton(
-                                tooltip: 'Reset Session',
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                                icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 22),
-                                onPressed: _confirmPowerExit,
-                              ),
-                            ],
-                          ),
+  /// Post-submission Geolocation Map + Google Location Card (No coordinates displayed)
+  Widget _buildVerifiedGeolocationCard() {
+    final bool hasValidGps = _verifiedLat != 0.0 || _verifiedLng != 0.0;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF131B2E),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF059669), width: 1.2),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Visual Map Area (108px height so full screen stays on 1 page)
+          SizedBox(
+            height: 108,
+            child: Stack(
+              children: [
+                if (hasValidGps)
+                  FlutterMap(
+                    options: MapOptions(
+                      initialCenter: LatLng(_verifiedLat, _verifiedLng),
+                      initialZoom: 16.0,
+                      interactionOptions: const InteractionOptions(
+                        flags: InteractiveFlag.none,
+                      ),
+                    ),
+                    children: [
+                      ColorFiltered(
+                        colorFilter: _darkMapFilter,
+                        child: TileLayer(
+                          urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName: 'com.svti.mobile',
                         ),
-
-                        const SizedBox(height: 10),
-
-                        // 2. COMPACT ALL-REQUIRED & CASE-SENSITIVE FORM
-                        Container(
-                          padding: const EdgeInsets.all(12.0),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF131B2E),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: const Color(0xFF1E293B)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Text(
-                                    'EMPLOYEE DETAILS',
-                                    style: TextStyle(
-                                      color: Color(0xFF94A3B8),
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.bold,
-                                      letterSpacing: 0.6,
-                                    ),
-                                  ),
-                                  Text(
-                                    'All Required • Case-Sensitive',
-                                    style: TextStyle(
-                                      color: Color(0xFFFBBF24),
-                                      fontSize: 10.5,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
-                              _buildCompactInput(
-                                controller: _employeeIdController,
-                                hintText: 'Full Name / ID * (Case-Sensitive)',
-                                icon: Icons.person_outline,
-                              ),
-                              const SizedBox(height: 8),
-                              _buildCompactInput(
-                                controller: _phoneController,
-                                hintText: 'Phone Number *',
-                                icon: Icons.smartphone,
-                                keyboardType: TextInputType.phone,
-                              ),
-                              const SizedBox(height: 8),
-                              _buildCompactInput(
-                                controller: _siteNameController,
-                                hintText: 'Site Location * (Case-Sensitive)',
-                                icon: Icons.location_on_outlined,
-                                textInputAction: TextInputAction.done,
-                              ),
-                              const SizedBox(height: 8),
-
-                              // Compact Overtime Row
-                              InkWell(
-                                onTap: () => setState(() => _isOvertime = !_isOvertime),
-                                borderRadius: BorderRadius.circular(10),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF182238),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      const Expanded(
-                                        child: Text(
-                                          'Mark as Overtime',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.w600,
-                                            fontSize: 12.5,
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        height: 24,
-                                        width: 24,
-                                        child: Checkbox(
-                                          value: _isOvertime,
-                                          activeColor: const Color(0xFF2563EB),
-                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                                          side: const BorderSide(color: Color(0xFF475569)),
-                                          onChanged: (val) => setState(() => _isOvertime = val ?? false),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        const SizedBox(height: 10),
-
-                        // 3. MANDATORY SELFIE VERIFICATION (Inline Thumbnail keeps screen 1-page)
-                        InkWell(
-                          onTap: _isLoading ? null : _captureSelfie,
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            width: double.infinity,
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF131B2E),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: _imageBytes == null ? const Color(0xFFE11D48) : const Color(0xFF2563EB),
-                                width: 1.5,
-                              ),
-                            ),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
+                      ),
+                      MarkerLayer(
+                        markers: [
+                          Marker(
+                            point: LatLng(_verifiedLat, _verifiedLng),
+                            width: 48,
+                            height: 48,
+                            child: Stack(
+                              alignment: Alignment.center,
                               children: [
-                                if (_imageBytes != null) ...[
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(6),
-                                    child: Image.memory(
-                                      _imageBytes!,
-                                      width: 36,
-                                      height: 36,
-                                      fit: BoxFit.cover,
+                                Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: const Color(0xFF10B981).withOpacity(0.28),
+                                    border: Border.all(
+                                      color: const Color(0xFF34D399).withOpacity(0.75),
+                                      width: 1.5,
                                     ),
                                   ),
-                                  const SizedBox(width: 10),
-                                  const Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          'Selfie Verified ✓',
-                                          style: TextStyle(
-                                            color: Color(0xFF38BDF8),
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 13.5,
-                                          ),
-                                        ),
-                                        Text(
-                                          'Tap to retake verification photo',
-                                          style: TextStyle(
-                                            color: Color(0xFF94A3B8),
-                                            fontSize: 11,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8), size: 20),
-                                ] else ...[
-                                  const Icon(
-                                    Icons.camera_alt_outlined,
-                                    color: Color(0xFFF43F5E),
-                                    size: 18,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  const Text(
-                                    'Take Selfie Verification * (Mandatory)',
-                                    style: TextStyle(
-                                      color: Color(0xFFF43F5E),
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 13,
-                                    ),
-                                  ),
-                                ],
+                                ),
+                                const Icon(
+                                  Icons.location_on,
+                                  color: Color(0xFF10B981),
+                                  size: 30,
+                                ),
                               ],
                             ),
                           ),
-                        ),
-
-                        const SizedBox(height: 10),
-
-                        // 4. TIME IN & TIME OUT ACTION BUTTONS
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Material(
-                                color: Colors.transparent,
-                                child: InkWell(
-                                  onTap: _isLoading ? null : () => _submitAttendance('Time In'),
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: Container(
-                                    height: 46,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFF2563EB),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        if (_isLoading && _activeAction == 'Time In') ...[
-                                          const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                                          ),
-                                          const SizedBox(width: 8),
-                                        ] else ...[
-                                          const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
-                                          const SizedBox(width: 6),
-                                        ],
-                                        const Text(
-                                          'TIME IN',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 13,
-                                            letterSpacing: 0.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Material(
-                                color: Colors.transparent,
-                                child: InkWell(
-                                  onTap: _isLoading ? null : () => _submitAttendance('Time Out'),
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: Container(
-                                    height: 46,
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFDC2626),
-                                      borderRadius: BorderRadius.circular(12),
-                                    ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.center,
-                                      children: [
-                                        if (_isLoading && _activeAction == 'Time Out') ...[
-                                          const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                                          ),
-                                          const SizedBox(width: 8),
-                                        ] else ...[
-                                          const Icon(Icons.logout_rounded, color: Colors.white, size: 18),
-                                          const SizedBox(width: 6),
-                                        ],
-                                        const Text(
-                                          'TIME OUT',
-                                          style: TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 13,
-                                            letterSpacing: 0.5,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-
-                        const SizedBox(height: 10),
-
-                        // 5. DETAILED STATUS & SERVER ERROR DIAGNOSTIC BOX
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 250),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: _statusMessage == null
-                                ? const Color(0xFF131B2E)
-                                : (_isLoading
-                                    ? const Color(0xFF1E293B)
-                                    : (_isSuccess ? const Color(0xFF064E3B) : const Color(0xFF450A0A))),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: _statusMessage == null
-                                  ? const Color(0xFF1E293B)
-                                  : (_isLoading
-                                      ? const Color(0xFF3B82F6)
-                                      : (_isSuccess ? const Color(0xFF059669) : const Color(0xFFDC2626))),
-                              width: 1.2,
+                        ],
+                      ),
+                    ],
+                  )
+                else
+                  Container(
+                    color: const Color(0xFF0B1324),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.map_rounded, color: Color(0xFF34D399), size: 28),
+                          const SizedBox(height: 4),
+                          Text(
+                            _resolvedGoogleLocation,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Padding(
-                                padding: const EdgeInsets.only(top: 2),
-                                child: _statusMessage == null
-                                    ? const Icon(Icons.info_outline_rounded, color: Color(0xFF64748B), size: 18)
-                                    : (_isLoading
-                                        ? const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(color: Color(0xFF38BDF8), strokeWidth: 2),
-                                          )
-                                        : Icon(
-                                            _isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
-                                            color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
-                                            size: 18,
-                                          )),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      _statusTitle ?? 'Ready for Attendance',
-                                      style: TextStyle(
-                                        color: _statusMessage == null
-                                            ? const Color(0xFF94A3B8)
-                                            : (_isLoading
-                                                ? const Color(0xFF38BDF8)
-                                                : (_isSuccess ? const Color(0xFF34D399) : const Color(0xFFFCA5A5))),
-                                        fontSize: 12.5,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      _statusMessage ??
-                                          'Complete all case-sensitive fields and capture a selfie to log Time In or Time Out.',
-                                      style: TextStyle(
-                                        color: _statusMessage == null
-                                            ? const Color(0xFF64748B)
-                                            : (_isSuccess ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
-                                        fontSize: 11.5,
-                                        height: 1.3,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
+                        ],
+                      ),
+                    ),
+                  ),
+                // Top-left Verified Map Badge
+                Positioned(
+                  top: 7,
+                  left: 8,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF064E3B).withOpacity(0.92),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFF10B981)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.verified_rounded, color: Color(0xFF34D399), size: 12),
+                        SizedBox(width: 4),
+                        Text(
+                          'VERIFIED LOCATION MAP',
+                          style: TextStyle(
+                            color: Color(0xFFA7F3D0),
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.4,
                           ),
                         ),
                       ],
                     ),
                   ),
                 ),
-              ),
-            );
-          },
+              ],
+            ),
+          ),
+
+          // Google Location Name Bar (No coordinates)
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            color: const Color(0xFF0F172A),
+            child: Row(
+              children: [
+                const Icon(Icons.place_rounded, color: Color(0xFF34D399), size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: RichText(
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    text: TextSpan(
+                      children: [
+                        const TextSpan(
+                          text: 'Google Location: ',
+                          style: TextStyle(
+                            color: Color(0xFF94A3B8),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        TextSpan(
+                          text: _resolvedGoogleLocation,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RepaintBoundary(
+      key: _screenBoundaryKey,
+      child: Scaffold(
+        backgroundColor: const Color(0xFF090D16),
+        body: SafeArea(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minHeight: constraints.maxHeight - 16.0,
+                  ),
+                  child: Center(
+                    child: Container(
+                      constraints: const BoxConstraints(maxWidth: 420),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          // 1. HEADER WITH PROMINENT LIVE REAL-TIME DATE & CLOCK
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF131B2E),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFF1E293B)),
+                            ),
+                            child: Column(
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      width: 36,
+                                      height: 36,
+                                      padding: const EdgeInsets.all(4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white,
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: Image.asset(
+                                        'assets/svti_logo.png',
+                                        fit: BoxFit.contain,
+                                        errorBuilder: (context, error, stackTrace) => const Icon(
+                                          Icons.business_rounded,
+                                          color: Color(0xFF2563EB),
+                                          size: 22,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 9),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          const Text(
+                                            'SVTI Mobile',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 15.5,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                          Row(
+                                            children: [
+                                              Container(
+                                                width: 6,
+                                                height: 6,
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: _isServerTimeSynced
+                                                      ? const Color(0xFF34D399)
+                                                      : const Color(0xFF38BDF8),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 5),
+                                              Text(
+                                                _isServerTimeSynced
+                                                    ? 'SERVER TIME • PHT (UTC+8)'
+                                                    : 'REAL TIME • PHT (UTC+8)',
+                                                style: const TextStyle(
+                                                  color: Color(0xFF94A3B8),
+                                                  fontSize: 10,
+                                                  fontWeight: FontWeight.w600,
+                                                  letterSpacing: 0.3,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    if (_recentLogs.isNotEmpty)
+                                      IconButton(
+                                        tooltip: 'Session Logs (${_recentLogs.length})',
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                                        icon: Badge(
+                                          label: Text('${_recentLogs.length}'),
+                                          backgroundColor: const Color(0xFF2563EB),
+                                          child: const Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 21),
+                                        ),
+                                        onPressed: _showSessionLogsModal,
+                                      ),
+                                    IconButton(
+                                      tooltip: 'Reset Session',
+                                      padding: EdgeInsets.zero,
+                                      constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                                      icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 21),
+                                      onPressed: _confirmPowerExit,
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 7),
+                                // High-Visibility Live Digital Clock & Date Strip
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF0B1120),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(color: const Color(0xFF1E293B)),
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Row(
+                                        children: [
+                                          const Icon(Icons.access_time_filled_rounded,
+                                              color: Color(0xFF38BDF8), size: 16),
+                                          const SizedBox(width: 6),
+                                          Text(
+                                            _liveClockText,
+                                            style: const TextStyle(
+                                              color: Color(0xFF38BDF8),
+                                              fontSize: 17,
+                                              fontWeight: FontWeight.w800,
+                                              fontFamily: 'monospace',
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                      Text(
+                                        _liveDateText,
+                                        style: const TextStyle(
+                                          color: Color(0xFFE2E8F0),
+                                          fontSize: 11.5,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 8),
+
+                          // 2. GEOLOCATION MAP & GOOGLE LOCATION (ONLY SHOWN AFTER VALID IN/OUT)
+                          if (_showGeolocationCard) _buildVerifiedGeolocationCard(),
+
+                          // 3. COMPACT ALL-REQUIRED & CASE-SENSITIVE FORM
+                          Container(
+                            padding: const EdgeInsets.all(10.0),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF131B2E),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: const Color(0xFF1E293B)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      'EMPLOYEE DETAILS',
+                                      style: TextStyle(
+                                        color: Color(0xFF94A3B8),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                        letterSpacing: 0.6,
+                                      ),
+                                    ),
+                                    Text(
+                                      'All Required • Case-Sensitive',
+                                      style: TextStyle(
+                                        color: Color(0xFFFBBF24),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 7),
+                                _buildCompactInput(
+                                  controller: _employeeIdController,
+                                  hintText: 'Full Name / ID * (Case-Sensitive)',
+                                  icon: Icons.person_outline,
+                                ),
+                                const SizedBox(height: 7),
+                                _buildCompactInput(
+                                  controller: _phoneController,
+                                  hintText: 'Phone Number *',
+                                  icon: Icons.smartphone,
+                                  keyboardType: TextInputType.phone,
+                                ),
+                                const SizedBox(height: 7),
+                                _buildCompactInput(
+                                  controller: _siteNameController,
+                                  hintText: 'Site Location * (Case-Sensitive)',
+                                  icon: Icons.location_on_outlined,
+                                  textInputAction: TextInputAction.done,
+                                ),
+                                const SizedBox(height: 7),
+
+                                // Compact Overtime Row
+                                InkWell(
+                                  onTap: () => setState(() => _isOvertime = !_isOvertime),
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF182238),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        const Expanded(
+                                          child: Text(
+                                            'Mark as Overtime',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.w600,
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                        SizedBox(
+                                          height: 22,
+                                          width: 22,
+                                          child: Checkbox(
+                                            value: _isOvertime,
+                                            activeColor: const Color(0xFF2563EB),
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                            side: const BorderSide(color: Color(0xFF475569)),
+                                            onChanged: (val) => setState(() => _isOvertime = val ?? false),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 8),
+
+                          // 4. MANDATORY SELFIE VERIFICATION
+                          InkWell(
+                            onTap: _isLoading ? null : _captureSelfie,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF131B2E),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: _imageBytes == null ? const Color(0xFFE11D48) : const Color(0xFF2563EB),
+                                  width: 1.5,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  if (_imageBytes != null) ...[
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(6),
+                                      child: Image.memory(
+                                        _imageBytes!,
+                                        width: 34,
+                                        height: 34,
+                                        fit: BoxFit.cover,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    const Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            'Selfie Verified ✓',
+                                            style: TextStyle(
+                                              color: Color(0xFF38BDF8),
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                          Text(
+                                            'Tap to retake verification photo',
+                                            style: TextStyle(
+                                              color: Color(0xFF94A3B8),
+                                              fontSize: 10.5,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Icon(Icons.refresh_rounded, color: Color(0xFF38BDF8), size: 19),
+                                  ] else ...[
+                                    const Icon(
+                                      Icons.camera_alt_outlined,
+                                      color: Color(0xFFF43F5E),
+                                      size: 17,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'Take Selfie Verification * (Mandatory)',
+                                      style: TextStyle(
+                                        color: Color(0xFFF43F5E),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 12.5,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+
+                          const SizedBox(height: 8),
+
+                          // 5. TIME IN & TIME OUT ACTION BUTTONS
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    onTap: _isLoading ? null : () => _submitAttendance('Time In'),
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Container(
+                                      height: 44,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF2563EB),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          if (_isLoading && _activeAction == 'Time In') ...[
+                                            const SizedBox(
+                                              width: 15,
+                                              height: 15,
+                                              child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                            ),
+                                            const SizedBox(width: 8),
+                                          ] else ...[
+                                            const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 17),
+                                            const SizedBox(width: 6),
+                                          ],
+                                          const Text(
+                                            'TIME IN',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 12.5,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Material(
+                                  color: Colors.transparent,
+                                  child: InkWell(
+                                    onTap: _isLoading ? null : () => _submitAttendance('Time Out'),
+                                    borderRadius: BorderRadius.circular(12),
+                                    child: Container(
+                                      height: 44,
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFDC2626),
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          if (_isLoading && _activeAction == 'Time Out') ...[
+                                            const SizedBox(
+                                              width: 15,
+                                              height: 15,
+                                              child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                            ),
+                                            const SizedBox(width: 8),
+                                          ] else ...[
+                                            const Icon(Icons.logout_rounded, color: Colors.white, size: 17),
+                                            const SizedBox(width: 6),
+                                          ],
+                                          const Text(
+                                            'TIME OUT',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 12.5,
+                                              letterSpacing: 0.5,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          const SizedBox(height: 8),
+
+                          // 6. DETAILED STATUS & SERVER ERROR DIAGNOSTIC BOX
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 250),
+                            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 9),
+                            decoration: BoxDecoration(
+                              color: _statusMessage == null
+                                  ? const Color(0xFF131B2E)
+                                  : (_isLoading
+                                      ? const Color(0xFF1E293B)
+                                      : (_isSuccess ? const Color(0xFF064E3B) : const Color(0xFF450A0A))),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: _statusMessage == null
+                                    ? const Color(0xFF1E293B)
+                                    : (_isLoading
+                                        ? const Color(0xFF3B82F6)
+                                        : (_isSuccess ? const Color(0xFF059669) : const Color(0xFFDC2626))),
+                                width: 1.2,
+                              ),
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 1),
+                                  child: _statusMessage == null
+                                      ? const Icon(Icons.info_outline_rounded, color: Color(0xFF64748B), size: 17)
+                                      : (_isLoading
+                                          ? const SizedBox(
+                                              width: 15,
+                                              height: 15,
+                                              child: CircularProgressIndicator(color: Color(0xFF38BDF8), strokeWidth: 2),
+                                            )
+                                          : Icon(
+                                              _isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+                                              color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
+                                              size: 17,
+                                            )),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        _statusTitle ?? 'Ready for Attendance',
+                                        style: TextStyle(
+                                          color: _statusMessage == null
+                                              ? const Color(0xFF94A3B8)
+                                              : (_isLoading
+                                                  ? const Color(0xFF38BDF8)
+                                                  : (_isSuccess ? const Color(0xFF34D399) : const Color(0xFFFCA5A5))),
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Text(
+                                        _statusMessage ??
+                                            'Complete all case-sensitive fields and capture a selfie to log Time In or Time Out.',
+                                        style: TextStyle(
+                                          color: _statusMessage == null
+                                              ? const Color(0xFF64748B)
+                                              : (_isSuccess ? const Color(0xFFA7F3D0) : const Color(0xFFFECACA)),
+                                          fontSize: 11,
+                                          height: 1.25,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
         ),
       ),
     );
