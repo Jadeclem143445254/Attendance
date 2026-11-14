@@ -160,8 +160,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   /// Fetches high-accuracy GPS coordinates for server geofence check & map
   Future> _fetchCurrentLocation() async {
-    
-    try {
+        try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
         return {'latitude': 0.0, 'longitude': 0.0};
