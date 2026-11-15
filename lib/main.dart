@@ -603,7 +603,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     tooltip: 'Show saved entries',
                     onPressed: () {
                       fieldFocusNode.requestFocus();
-                      // Trigger options display
                       final current = fieldController.text;
                       fieldController.value = TextEditingValue(
                         text: current,
