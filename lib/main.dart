@@ -47,7 +47,7 @@ class AttendanceScreen extends StatefulWidget {
 class _AttendanceScreenState extends State<AttendanceScreen> {
   static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
 
-  final GlobalKey _screenBoundaryKey = GlobalKey();
+  final GlobalKey _receiptPopupKey = GlobalKey();
 
   final TextEditingController _employeeIdController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
@@ -141,18 +141,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return cleaned;
   }
 
-  Future<void> _captureAndSaveReceiptScreenshot(String actionType) async {
-    if (kIsWeb) return;
+  /// Captures the pop-out receipt card and saves it to the mobile gallery
+  Future<bool> _savePopupReceiptToGallery(String actionType) async {
+    if (kIsWeb) return false;
     try {
-      await Future.delayed(const Duration(milliseconds: 350));
-      if (!mounted) return;
+      await Future.delayed(const Duration(milliseconds: 150));
+      final boundary = _receiptPopupKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      if (boundary == null) return false;
 
-      final boundary = _screenBoundaryKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-      if (boundary == null) return;
-
-      final ui.Image image = await boundary.toImage(pixelRatio: 2.5);
+      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
       final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) return;
+      if (byteData == null) return false;
 
       final Uint8List pngBytes = byteData.buffer.asUint8List();
 
@@ -169,18 +168,258 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           album: 'SVTI Attendance',
           name: fileName,
         );
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Screenshot proof saved to mobile gallery (SVTI Attendance).'),
-              backgroundColor: Color(0xFF065F46),
-              duration: Duration(seconds: 3),
-            ),
-          );
-        }
+        return true;
       }
-    } catch (_) {}
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Shows a pop-out receipt modal after a valid Time In / Time Out with geofence details & save screenshot button
+  void _showValidLogReceiptPopup(Map logData) {
+    final bool isTimeIn = logData['action_type'] == 'Time In';
+    final Uint8List? photoBytes = logData['photo_bytes'];
+    final double lat = (logData['latitude'] is num) ? (logData['latitude'] as num).toDouble() : 0.0;
+    final double lng = (logData['longitude'] is num) ? (logData['longitude'] as num).toDouble() : 0.0;
+    final String gpsText = '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
+    final String formattedTime = _formatTimestamp(logData['timestamp'] as DateTime);
+
+    bool isSaving = false;
+    bool isSaved = false;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0F172A),
+              contentPadding: const EdgeInsets.all(16),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
+                side: const BorderSide(color: Color(0xFF10B981), width: 1.5),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Capturable Receipt Card
+                    RepaintBoundary(
+                      key: _receiptPopupKey,
+                      child: Container(
+                        width: 310,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF131B2E),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: const Color(0xFF1E293B)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF10B981).withOpacity(0.15),
+                                    shape: BoxShape.circle,
+                                  ),
+                                  child: const Icon(
+                                    Icons.verified_rounded,
+                                    color: Color(0xFF34D399),
+                                    size: 22,
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                const Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'SVTI Attendance Receipt',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14,
+                                        ),
+                                      ),
+                                      Text(
+                                        'Verified Geofence Log',
+                                        style: TextStyle(
+                                          color: Color(0xFF34D399),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: isTimeIn
+                                        ? const Color(0xFF2563EB).withOpacity(0.25)
+                                        : const Color(0xFFDC2626).withOpacity(0.25),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    (logData['action_type'] ?? '').toString().toUpperCase(),
+                                    style: TextStyle(
+                                      color: isTimeIn ? const Color(0xFF60A5FA) : const Color(0xFFF87171),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            if (photoBytes != null)
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: Image.memory(
+                                  photoBytes,
+                                  height: 150,
+                                  width: double.infinity,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                            const SizedBox(height: 12),
+                            const Divider(color: Color(0xFF1E293B), height: 1),
+                            const SizedBox(height: 10),
+                            _receiptDetailRow('Employee', '${logData['employee_id']}'),
+                            const SizedBox(height: 6),
+                            _receiptDetailRow('Site Location', '${logData['site_name']}'),
+                            const SizedBox(height: 6),
+                            _receiptDetailRow('Geofence GPS', gpsText, valueColor: const Color(0xFF34D399)),
+                            const SizedBox(height: 6),
+                            _receiptDetailRow(
+                              'Shift Type',
+                              logData['is_overtime'] == true ? 'OVERTIME' : 'REGULAR',
+                            ),
+                            const SizedBox(height: 6),
+                            _receiptDetailRow('Timestamp', formattedTime),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    // Action Buttons
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton(
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Color(0xFF334155)),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: isSaving ? null : () => Navigator.of(dialogContext).pop(),
+                            child: const Text(
+                              'Close',
+                              style: TextStyle(color: Color(0xFF94A3B8), fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          flex: 2,
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: isSaved ? const Color(0xFF059669) : const Color(0xFF2563EB),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            ),
+                            onPressed: (isSaving || isSaved)
+                                ? null
+                                : () async {
+                                    setDialogState(() => isSaving = true);
+                                    final ok = await _savePopupReceiptToGallery(
+                                      (logData['action_type'] ?? 'Log').toString(),
+                                    );
+                                    if (!dialogContext.mounted) return;
+                                    setDialogState(() {
+                                      isSaving = false;
+                                      isSaved = ok;
+                                    });
+                                    if (ok) {
+                                      ScaffoldMessenger.of(this.context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Saved to mobile gallery (SVTI Attendance).'),
+                                          backgroundColor: Color(0xFF065F46),
+                                          duration: Duration(seconds: 3),
+                                        ),
+                                      );
+                                    } else {
+                                      ScaffoldMessenger.of(this.context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Unable to save screenshot. Please allow Photos/Storage permission.'),
+                                          backgroundColor: Color(0xFF991B1B),
+                                          duration: Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  },
+                            icon: isSaving
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                  )
+                                : Icon(
+                                    isSaved ? Icons.check_circle_rounded : Icons.download_rounded,
+                                    color: Colors.white,
+                                    size: 18,
+                                  ),
+                            label: Text(
+                              isSaved ? 'Saved to Gallery' : 'Save Screenshot',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _receiptDetailRow(String label, String value, {Color valueColor = Colors.white}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 92,
+          child: Text(
+            label,
+            style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11.5),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(
+              color: valueColor,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+            textAlign: TextAlign.right,
+          ),
+        ),
+      ],
+    );
   }
 
   Future<void> _syncServerClock() async {
@@ -465,9 +704,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _setStatus(respData['message'] ?? '$actionType recorded successfully!', isSuccess: true);
         _resetPhotoAndOvertimeOnly();
 
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _captureAndSaveReceiptScreenshot(actionType);
-        });
+        // Pop out receipt modal with valid geofence coordinates & Save Screenshot button
+        if (mounted) {
+          _showValidLogReceiptPopup(newLog);
+        }
       } else {
         final String rawErr = (respData['error'] ??
                 respData['message'] ??
@@ -724,414 +964,415 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
-      key: _screenBoundaryKey,
-      child: Scaffold(
-        backgroundColor: const Color(0xFF090D16),
-        body: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
-            child: Center(
-              child: Container(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF131B2E),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFF1E293B)),
-                      ),
-                      child: Column(
-                        children: [
-                          Row(
-                            children: [
-                              Container(
-                                width: 46,
-                                height: 46,
-                                padding: const EdgeInsets.all(4),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Image.asset(
-                                  'assets/svti_logo.png',
-                                  fit: BoxFit.contain,
-                                  errorBuilder: (context, error, stackTrace) => const Icon(
-                                    Icons.business_rounded,
-                                    color: Color(0xFF2563EB),
-                                    size: 26,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Text(
-                                      'SVTI Mobile',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 17,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const Text(
-                                      'Employee Field Attendance',
-                                      style: TextStyle(
-                                        color: Color(0xFF94A3B8),
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      _liveClockText,
-                                      style: const TextStyle(
-                                        color: Color(0xFF38BDF8),
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w700,
-                                        fontFamily: 'monospace',
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              IconButton(
-                                tooltip: 'Reset Session',
-                                icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
-                                onPressed: _confirmPowerExit,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 10),
-                          Container(
-                            height: 26,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF0F172A),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: const Color(0xFF1E293B)),
-                            ),
-                            child: const _ScrollingMarqueeText(
-                              text: 'Spirituality, Efficiency, Responsiveness, Viability, and Excellence',
-                            ),
-                          ),
-                        ],
-                      ),
+    return Scaffold(
+      backgroundColor: const Color(0xFF090D16),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
+          child: Center(
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF131B2E),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFF1E293B)),
                     ),
-
-                    const SizedBox(height: 16),
-
-                    Container(
-                      padding: const EdgeInsets.all(16.0),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF131B2E),
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: const Color(0xFF1E293B)),
-                      ),
-                      child: Column(
-                        children: [
-                          _buildAutocompleteField(
-                            controller: _employeeIdController,
-                            suggestions: _savedEmpIds,
-                            hintText: 'Full Name / ID *',
-                            icon: Icons.person_outline,
-                          ),
-                          const SizedBox(height: 12),
-                          _buildAutocompleteField(
-                            controller: _phoneController,
-                            suggestions: _savedPhones,
-                            hintText: 'Phone Number *',
-                            icon: Icons.smartphone,
-                            keyboardType: TextInputType.phone,
-                          ),
-                          const SizedBox(height: 12),
-                          _buildAutocompleteField(
-                            controller: _siteNameController,
-                            suggestions: _savedSites,
-                            labelText: 'Site Location *',
-                            hintText: 'Site Location *',
-                            icon: Icons.location_on_outlined,
-                          ),
-                          const SizedBox(height: 14),
-
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF182238),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Row(
-                              children: [
-                                const Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Mark as Overtime',
-                                        style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 13,
-                                        ),
-                                      ),
-                                      SizedBox(height: 2),
-                                      Text(
-                                        'Toggle on if logging overtime hours',
-                                        style: TextStyle(
-                                          color: Color(0xFF94A3B8),
-                                          fontSize: 11,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                Checkbox(
-                                  value: _isOvertime,
-                                  activeColor: const Color(0xFF2563EB),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-                                  side: const BorderSide(color: Color(0xFF475569)),
-                                  onChanged: (val) => setState(() => _isOvertime = val ?? false),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    InkWell(
-                      onTap: _isLoading ? null : _captureSelfie,
-                      borderRadius: BorderRadius.circular(12),
-                      child: Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF131B2E),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: _imageBytes == null ? const Color(0xFFE11D48) : const Color(0xFF2563EB),
-                            width: 1.5,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                    child: Column(
+                      children: [
+                        Row(
                           children: [
-                            Icon(
-                              Icons.camera_alt_outlined,
-                              color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
-                              size: 18,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              _imageBytes == null ? 'Take Selfie Verification *' : 'Selfie Verified ✓',
-                              style: TextStyle(
-                                color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
-                                fontWeight: FontWeight.bold,
-                                fontSize: 14,
+                            Container(
+                              width: 46,
+                              height: 46,
+                              padding: const EdgeInsets.all(4),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(10),
                               ),
+                              child: Image.asset(
+                                'assets/svti_logo.png',
+                                fit: BoxFit.contain,
+                                errorBuilder: (context, error, stackTrace) => const Icon(
+                                  Icons.business_rounded,
+                                  color: Color(0xFF2563EB),
+                                  size: 26,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'SVTI Mobile',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  const Text(
+                                    'Employee Field Attendance',
+                                    style: TextStyle(
+                                      color: Color(0xFF94A3B8),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _liveClockText,
+                                    style: const TextStyle(
+                                      color: Color(0xFF38BDF8),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      fontFamily: 'monospace',
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Reset Session',
+                              icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
+                              onPressed: _confirmPowerExit,
                             ),
                           ],
                         ),
-                      ),
-                    ),
-
-                    if (_imageBytes != null) ...[
-                      const SizedBox(height: 12),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: Image.memory(
-                          _imageBytes!,
-                          height: 160,
-                          width: double.infinity,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                    ],
-
-                    const SizedBox(height: 16),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              onTap: _isLoading ? null : () => _submitAttendance('Time In'),
-                              borderRadius: BorderRadius.circular(12),
-                              child: Container(
-                                height: 48,
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF2563EB),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    if (_isLoading && _activeAction == 'Time In') ...[
-                                      const SizedBox(
-                                        width: 18,
-                                        height: 18,
-                                        child: CircularProgressIndicator(
-                                          color: Colors.white,
-                                          strokeWidth: 2,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                    ] else ...[
-                                      const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
-                                      const SizedBox(width: 6),
-                                    ],
-                                    const Text(
-                                      'TIME IN',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13,
-                                        letterSpacing: 0.5,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
+                        const SizedBox(height: 10),
+                        Container(
+                          height: 26,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF0F172A),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFF1E293B)),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Material(
-                            color: Colors.transparent,
-                            child: InkWell(
-                              onTap: _isLoading ? null : () => _submitAttendance('Time Out'),
-                              borderRadius: BorderRadius.circular(12),
-                              child: Container(
-                                height: 48,
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFFDC2626),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    if (_isLoading && _activeAction == 'Time Out') ...[
-                                      const SizedBox(
-                                        width: 18,
-                                        height: 18,
-                                        child: CircularProgressIndicator(
-                                          color: Colors.white,
-                                          strokeWidth: 2,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                    ] else ...[
-                                      const Icon(Icons.logout_rounded, color: Colors.white, size: 18),
-                                      const SizedBox(width: 6),
-                                    ],
-                                    const Text(
-                                      'TIME OUT',
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13,
-                                        letterSpacing: 0.5,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
+                          child: const _ScrollingMarqueeText(
+                            text: 'Spirituality, Efficiency, Responsiveness, Viability, and Excellence',
                           ),
                         ),
                       ],
                     ),
+                  ),
 
-                    if (_statusMessage != null) ...[
-                      const SizedBox(height: 16),
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 300),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                        decoration: BoxDecoration(
-                          color: _isLoading
-                              ? const Color(0xFF1E293B)
-                              : (_isSuccess ? const Color(0xFF064E3B) : const Color(0xFF450A0A)),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: _isLoading
-                                ? const Color(0xFF3B82F6)
-                                : (_isSuccess ? const Color(0xFF059669) : const Color(0xFFDC2626)),
-                            width: 1.2,
+                  const SizedBox(height: 16),
+
+                  Container(
+                    padding: const EdgeInsets.all(16.0),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF131B2E),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFF1E293B)),
+                    ),
+                    child: Column(
+                      children: [
+                        _buildAutocompleteField(
+                          controller: _employeeIdController,
+                          suggestions: _savedEmpIds,
+                          hintText: 'Full Name / ID *',
+                          icon: Icons.person_outline,
+                        ),
+                        const SizedBox(height: 12),
+                        _buildAutocompleteField(
+                          controller: _phoneController,
+                          suggestions: _savedPhones,
+                          hintText: 'Phone Number *',
+                          icon: Icons.smartphone,
+                          keyboardType: TextInputType.phone,
+                        ),
+                        const SizedBox(height: 12),
+                        _buildAutocompleteField(
+                          controller: _siteNameController,
+                          suggestions: _savedSites,
+                          labelText: 'Site Location *',
+                          hintText: 'Site Location *',
+                          icon: Icons.location_on_outlined,
+                        ),
+                        const SizedBox(height: 14),
+
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF182238),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            children: [
+                              const Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Mark as Overtime',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                    SizedBox(height: 2),
+                                    Text(
+                                      'Toggle on if logging overtime hours',
+                                      style: TextStyle(
+                                        color: Color(0xFF94A3B8),
+                                        fontSize: 11,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Checkbox(
+                                value: _isOvertime,
+                                activeColor: const Color(0xFF2563EB),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                side: const BorderSide(color: Color(0xFF475569)),
+                                onChanged: (val) => setState(() => _isOvertime = val ?? false),
+                              ),
+                            ],
                           ),
                         ),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            if (_isLoading)
-                              const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  color: Color(0xFF38BDF8),
-                                  strokeWidth: 2,
-                                ),
-                              )
-                            else
-                              Icon(
-                                _isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
-                                color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
-                                size: 20,
-                              ),
-                            const SizedBox(width: 10),
-                            Flexible(
-                              child: Text(
-                                _statusMessage!,
-                                style: TextStyle(
-                                  color: _isLoading
-                                      ? const Color(0xFF38BDF8)
-                                      : (_isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171)),
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                                textAlign: TextAlign.center,
-                              ),
-                            ),
-                          ],
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 16),
+
+                  InkWell(
+                    onTap: _isLoading ? null : _captureSelfie,
+                    borderRadius: BorderRadius.circular(12),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF131B2E),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _imageBytes == null ? const Color(0xFFE11D48) : const Color(0xFF2563EB),
+                          width: 1.5,
                         ),
                       ),
-                    ],
-
-                    if (_recentLogs.isNotEmpty) ...[
-                      const SizedBox(height: 24),
-                      const Row(
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 18),
-                          SizedBox(width: 8),
+                          Icon(
+                            Icons.camera_alt_outlined,
+                            color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
                           Text(
-                            'Recent On-Screen Activity Logs',
+                            _imageBytes == null ? 'Take Selfie Verification *' : 'Selfie Verified ✓',
                             style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 15,
+                              color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
                               fontWeight: FontWeight.bold,
+                              fontSize: 14,
                             ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 10),
-                      ListView.separated(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: _recentLogs.length,
-                        separatorBuilder: (context, index) => const SizedBox(height: 10),
-                        itemBuilder: (context, index) {
-                          final log = _recentLogs[index];
-                          final bool isTimeIn = log['action_type'] == 'Time In';
-                          final Uint8List? photoBytes = log['photo_bytes'];
+                    ),
+                  ),
 
-                          return Container(
+                  if (_imageBytes != null) ...[
+                    const SizedBox(height: 12),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        _imageBytes!,
+                        height: 160,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ],
+
+                  const SizedBox(height: 16),
+
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isLoading ? null : () => _submitAttendance('Time In'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF2563EB),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  if (_isLoading && _activeAction == 'Time In') ...[
+                                    const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ] else ...[
+                                    const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  const Text(
+                                    'TIME IN',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: _isLoading ? null : () => _submitAttendance('Time Out'),
+                            borderRadius: BorderRadius.circular(12),
+                            child: Container(
+                              height: 48,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFDC2626),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  if (_isLoading && _activeAction == 'Time Out') ...[
+                                    const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(
+                                        color: Colors.white,
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                  ] else ...[
+                                    const Icon(Icons.logout_rounded, color: Colors.white, size: 18),
+                                    const SizedBox(width: 6),
+                                  ],
+                                  const Text(
+                                    'TIME OUT',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  if (_statusMessage != null) ...[
+                    const SizedBox(height: 16),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 300),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: _isLoading
+                            ? const Color(0xFF1E293B)
+                            : (_isSuccess ? const Color(0xFF064E3B) : const Color(0xFF450A0A)),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _isLoading
+                              ? const Color(0xFF3B82F6)
+                              : (_isSuccess ? const Color(0xFF059669) : const Color(0xFFDC2626)),
+                          width: 1.2,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (_isLoading)
+                            const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                color: Color(0xFF38BDF8),
+                                strokeWidth: 2,
+                              ),
+                            )
+                          else
+                            Icon(
+                              _isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+                              color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
+                              size: 20,
+                            ),
+                          const SizedBox(width: 10),
+                          Flexible(
+                            child: Text(
+                              _statusMessage!,
+                              style: TextStyle(
+                                color: _isLoading
+                                    ? const Color(0xFF38BDF8)
+                                    : (_isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171)),
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
+                  if (_recentLogs.isNotEmpty) ...[
+                    const SizedBox(height: 24),
+                    const Row(
+                      children: [
+                        Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 18),
+                        SizedBox(width: 8),
+                        Text(
+                          'Recent On-Screen Activity Logs',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _recentLogs.length,
+                      separatorBuilder: (context, index) => const SizedBox(height: 10),
+                      itemBuilder: (context, index) {
+                        final log = _recentLogs[index];
+                        final bool isTimeIn = log['action_type'] == 'Time In';
+                        final Uint8List? photoBytes = log['photo_bytes'];
+
+                        return InkWell(
+                          onTap: () => _showValidLogReceiptPopup(log),
+                          borderRadius: BorderRadius.circular(14),
+                          child: Container(
                             padding: const EdgeInsets.all(14),
                             decoration: BoxDecoration(
                               color: const Color(0xFF131B2E),
@@ -1219,12 +1460,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                 ),
                               ],
                             ),
-                          );
-                        },
-                      ),
-                    ],
+                          ),
+                        );
+                      },
+                    ),
                   ],
-                ),
+                ],
               ),
             ),
           ),
