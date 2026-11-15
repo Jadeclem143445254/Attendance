@@ -42,14 +42,12 @@ class AttendanceScreen extends StatefulWidget {
 }
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
-  // Backend server endpoint
   static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
 
   final TextEditingController _employeeIdController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _siteNameController = TextEditingController();
 
-  // Saved history lists for dropdown autocomplete
   List<String> _savedEmpIds = [];
   List<String> _savedPhones = [];
   List<String> _savedSites = [];
@@ -63,13 +61,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   bool _isSuccess = true;
   Timer? _statusDismissTimer;
 
-  // Live Digital Clock synced with SVTI Server / Internet Time
   Timer? _clockTimer;
   int _serverOffsetMs = 0;
   String _liveClockText = '--:--:-- --';
 
-  // Stores successful check-in/out logs to display on-screen
-  final List> _recentLogs = [];
+  // Uses List<dynamic> so nested angle brackets cannot be stripped on paste
+  final List<dynamic> _recentLogs = [];
 
   @override
   void initState() {
@@ -82,7 +79,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     _syncServerClock();
   }
 
-  /// Loads last used credentials and dropdown history from persistent storage
   Future<void> _loadSavedInputs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -92,7 +88,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _savedPhones = prefs.getStringList('history_phones') ?? [];
         _savedSites = prefs.getStringList('history_sites') ?? [];
 
-        // Auto-fill with the most recent log in/out details
         _employeeIdController.text = prefs.getString('last_emp_id') ?? '';
         _phoneController.text = prefs.getString('last_phone') ?? '';
         _siteNameController.text = prefs.getString('last_site') ?? '';
@@ -100,7 +95,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     } catch (_) {}
   }
 
-  /// Saves the current input values for next app launch and adds to dropdown history
   Future<void> _saveInputsToHistory(String empId, String phone, String site) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -133,7 +127,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     } catch (_) {}
   }
 
-  /// Strips any mention of "allowed radius" from backend rejection messages
   String _sanitizeErrorMessage(String rawMessage) {
     String cleaned = rawMessage
         .replaceAll(RegExp(r'\s*[\(\[]?\s*allowed\s*radius[^.\)\]]*[\)\]]?\.?', caseSensitive: false), '')
@@ -161,9 +154,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           _updateClockDisplay();
         }
       }
-    } catch (_) {
-      // Uses device clock seamlessly if offline
-    }
+    } catch (_) {}
   }
 
   void _updateClockDisplay() {
@@ -171,7 +162,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       DateTime.now().millisecondsSinceEpoch + _serverOffsetMs,
       isUtc: true,
     );
-    // Lock to Philippine Standard Time (UTC+8)
     final DateTime manilaNow = utcNow.add(const Duration(hours: 8));
     final int hourNum = manilaNow.hour == 0
         ? 12
@@ -188,8 +178,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Fetches high-accuracy GPS location for geofence validation
-  Future> _fetchCurrentLocation() async {
+  Future _fetchCurrentLocation() async {
     try {
       bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
@@ -225,7 +214,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Tries Desktop Live Camera stream (used for PC web)
   Future<Uint8List?> _tryDesktopLiveCamera() async {
     CameraController? controller;
     try {
@@ -311,7 +299,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Triggers selfie verification photo
   Future<void> _captureSelfie() async {
     try {
       final bool isMobileDevice = defaultTargetPlatform == TargetPlatform.android ||
@@ -359,25 +346,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Submit Attendance for TIME IN or TIME OUT
   Future<void> _submitAttendance(String actionType) async {
     final String empId = _employeeIdController.text.trim();
     final String phone = _phoneController.text.trim();
     final String site = _siteNameController.text.trim();
 
-    // 1. STRICT VALIDATION: Check if all text fields are filled out
     if (empId.isEmpty || phone.isEmpty || site.isEmpty) {
       _setStatus('All fields (Name/ID, Phone, Site Location) are required.', isSuccess: false);
       return;
     }
 
-    // 2. STRICT VALIDATION: Photo is mandatory for both TIME IN & TIME OUT
     if (_imageBytes == null || _photoBase64 == null) {
       _setStatus('Selfie verification photo is mandatory for $actionType.', isSuccess: false);
       return;
     }
 
-    // Save inputs immediately so dropdown remembers them even on retry
     await _saveInputsToHistory(empId, phone, site);
 
     setState(() {
@@ -409,9 +392,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           )
           .timeout(const Duration(seconds: 15));
 
-      Map<String, dynamic> respData = {};
+      Map respData = {};
       try {
-        respData = jsonDecode(response.body) as Map<String, dynamic>;
+        respData = jsonDecode(response.body) as Map;
       } catch (_) {}
 
       if (response.statusCode == 200 && (respData['success'] == true || respData['status'] == 'success')) {
@@ -432,13 +415,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         });
 
         _setStatus(respData['message'] ?? '$actionType recorded successfully!', isSuccess: true);
-        // Clear only photo & overtime toggle; keep credentials ready for next log
         _resetPhotoAndOvertimeOnly();
       } else {
-        // Show backend geofence / validation error message WITHOUT "allowed radius"
-        final String rawErr = respData['error'] ??
-            respData['message'] ??
-            'Check-in rejected by server (${response.statusCode}).';
+        final String rawErr = (respData['error'] ??
+                respData['message'] ??
+                'Check-in rejected by server (${response.statusCode}).')
+            .toString();
         _setStatus(_sanitizeErrorMessage(rawErr), isSuccess: false);
       }
     } catch (e) {
@@ -554,7 +536,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return '$month/$day/$year $hour:$minute $period';
   }
 
-  /// Input field with persistent history dropdown autocomplete
   Widget _buildAutocompleteField({
     required TextEditingController controller,
     required List<String> suggestions,
@@ -702,7 +683,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Header
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     decoration: BoxDecoration(
@@ -774,7 +754,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           ],
                         ),
                         const SizedBox(height: 10),
-                        // Moving 1-Liner Core Values Marquee
                         Container(
                           height: 26,
                           decoration: BoxDecoration(
@@ -792,7 +771,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Form Container
                   Container(
                     padding: const EdgeInsets.all(16.0),
                     decoration: BoxDecoration(
@@ -826,7 +804,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                         const SizedBox(height: 14),
 
-                        // Overtime Checkbox
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
@@ -874,7 +851,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Mandatory Selfie Verification Button
                   InkWell(
                     onTap: _isLoading ? null : _captureSelfie,
                     borderRadius: BorderRadius.circular(12),
@@ -911,7 +887,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                   ),
 
-                  // Image Preview
                   if (_imageBytes != null) ...[
                     const SizedBox(height: 12),
                     ClipRRect(
@@ -927,10 +902,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   const SizedBox(height: 16),
 
-                  // Action Buttons
                   Row(
                     children: [
-                      // TIME IN
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -976,7 +949,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                       ),
                       const SizedBox(width: 12),
-                      // TIME OUT
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
@@ -1024,7 +996,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
 
-                  // Status Container
                   if (_statusMessage != null) ...[
                     const SizedBox(height: 16),
                     AnimatedContainer(
@@ -1079,7 +1050,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                   ],
 
-                  // ON-SCREEN ATTENDANCE LOGS DISPLAY
                   if (_recentLogs.isNotEmpty) ...[
                     const SizedBox(height: 24),
                     const Row(
@@ -1209,7 +1179,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   }
 }
 
-/// Smooth continuous 1-line scrolling ticker for SVTI Core Values
 class _ScrollingMarqueeText extends StatefulWidget {
   final String text;
   const _ScrollingMarqueeText({required this.text});
