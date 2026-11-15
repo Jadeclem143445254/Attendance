@@ -1,57 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
-
-import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
-import 'package:latlong2/latlong.dart';
-
-import 'gallery_saver_web.dart'
-    if (dart.library.io) 'gallery_saver_mobile.dart';
+import 'package:camera/camera.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const AttendanceApp());
-}
-
-class GpsCoords {
-  final double latitude;
-  final double longitude;
-
-  const GpsCoords(this.latitude, this.longitude);
-}
-
-class AttendanceRecord {
-  final String employeeId;
-  final String phoneNumber;
-  final String siteName;
-  final String actionType;
-  final bool isOvertime;
-  final DateTime timestamp;
-  final double latitude;
-  final double longitude;
-  final String googleLocation;
-  final Uint8List? photoBytes;
-
-  const AttendanceRecord({
-    required this.employeeId,
-    required this.phoneNumber,
-    required this.siteName,
-    required this.actionType,
-    required this.isOvertime,
-    required this.timestamp,
-    required this.latitude,
-    required this.longitude,
-    required this.googleLocation,
-    this.photoBytes,
-  });
 }
 
 class AttendanceApp extends StatelessWidget {
@@ -82,66 +42,106 @@ class AttendanceScreen extends StatefulWidget {
 }
 
 class _AttendanceScreenState extends State<AttendanceScreen> {
+  // Backend server endpoint
   static const String _backendBaseUrl = 'https://clemenguavis.pythonanywhere.com';
-
-  final GlobalKey _receiptBoundaryKey = GlobalKey();
 
   final TextEditingController _employeeIdController = TextEditingController();
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _siteNameController = TextEditingController();
 
+  // Saved history lists for dropdown autocomplete
+  List<String> _savedEmpIds = [];
+  List<String> _savedPhones = [];
+  List<String> _savedSites = [];
+
   bool _isOvertime = false;
   String? _photoBase64;
   Uint8List? _imageBytes;
   bool _isLoading = false;
-  bool _isSavingReceipt = false;
   String? _activeAction;
   String? _statusMessage;
   bool _isSuccess = true;
+  Timer? _statusDismissTimer;
 
-  // Live Digital Clock synced with SVTI Server (Philippine Standard Time UTC+8)
+  // Live Digital Clock synced with SVTI Server / Internet Time
   Timer? _clockTimer;
   int _serverOffsetMs = 0;
   String _liveClockText = '--:--:-- --';
-  String _liveDateText = 'Loading Philippine Time...';
 
-  // Post-submission receipt + geolocation map data (hidden on standby)
-  AttendanceRecord? _latestReceipt;
-  final List<AttendanceRecord> _recentLogs = [];
-
-  static const List<String> _weekdays = [
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-    'Friday',
-    'Saturday',
-    'Sunday',
-  ];
-
-  static const List<String> _months = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
+  // Stores successful check-in/out logs to display on-screen
+  final List> _recentLogs = [];
 
   @override
   void initState() {
     super.initState();
+    _loadSavedInputs();
     _updateClockDisplay();
     _clockTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _updateClockDisplay();
     });
     _syncServerClock();
+  }
+
+  /// Loads last used credentials and dropdown history from persistent storage
+  Future<void> _loadSavedInputs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (!mounted) return;
+      setState(() {
+        _savedEmpIds = prefs.getStringList('history_emp_ids') ?? [];
+        _savedPhones = prefs.getStringList('history_phones') ?? [];
+        _savedSites = prefs.getStringList('history_sites') ?? [];
+
+        // Auto-fill with the most recent log in/out details
+        _employeeIdController.text = prefs.getString('last_emp_id') ?? '';
+        _phoneController.text = prefs.getString('last_phone') ?? '';
+        _siteNameController.text = prefs.getString('last_site') ?? '';
+      });
+    } catch (_) {}
+  }
+
+  /// Saves the current input values for next app launch and adds to dropdown history
+  Future<void> _saveInputsToHistory(String empId, String phone, String site) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('last_emp_id', empId);
+      await prefs.setString('last_phone', phone);
+      await prefs.setString('last_site', site);
+
+      if (empId.isNotEmpty) {
+        _savedEmpIds.remove(empId);
+        _savedEmpIds.insert(0, empId);
+        if (_savedEmpIds.length > 15) _savedEmpIds = _savedEmpIds.sublist(0, 15);
+        await prefs.setStringList('history_emp_ids', _savedEmpIds);
+      }
+
+      if (phone.isNotEmpty) {
+        _savedPhones.remove(phone);
+        _savedPhones.insert(0, phone);
+        if (_savedPhones.length > 15) _savedPhones = _savedPhones.sublist(0, 15);
+        await prefs.setStringList('history_phones', _savedPhones);
+      }
+
+      if (site.isNotEmpty) {
+        _savedSites.remove(site);
+        _savedSites.insert(0, site);
+        if (_savedSites.length > 15) _savedSites = _savedSites.sublist(0, 15);
+        await prefs.setStringList('history_sites', _savedSites);
+      }
+
+      if (mounted) setState(() {});
+    } catch (_) {}
+  }
+
+  /// Strips any mention of "allowed radius" from backend rejection messages
+  String _sanitizeErrorMessage(String rawMessage) {
+    String cleaned = rawMessage
+        .replaceAll(RegExp(r'\s*[\(\[]?\s*allowed\s*radius[^.\)\]]*[\)\]]?\.?', caseSensitive: false), '')
+        .trim();
+    if (cleaned.endsWith(',')) {
+      cleaned = '${cleaned.substring(0, cleaned.length - 1)}.';
+    }
+    return cleaned;
   }
 
   Future<void> _syncServerClock() async {
@@ -151,10 +151,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           .get(Uri.parse('$_backendBaseUrl/api/server-time'))
           .timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) {
-        final dynamic data = jsonDecode(res.body);
+        final data = jsonDecode(res.body);
         final int t1 = DateTime.now().millisecondsSinceEpoch;
         final int rttHalf = ((t1 - t0) / 2).round();
-        if (data is Map && data['epoch_ms'] != null && mounted) {
+        if (data['epoch_ms'] != null) {
           setState(() {
             _serverOffsetMs = (data['epoch_ms'] as int) + rttHalf - t1;
           });
@@ -162,20 +162,17 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         }
       }
     } catch (_) {
-      // Uses device clock offset seamlessly if offline
+      // Uses device clock seamlessly if offline
     }
   }
 
-  DateTime _currentManilaTime() {
+  void _updateClockDisplay() {
     final DateTime utcNow = DateTime.fromMillisecondsSinceEpoch(
       DateTime.now().millisecondsSinceEpoch + _serverOffsetMs,
       isUtc: true,
     );
-    return utcNow.add(const Duration(hours: 8));
-  }
-
-  void _updateClockDisplay() {
-    final DateTime manilaNow = _currentManilaTime();
+    // Lock to Philippine Standard Time (UTC+8)
+    final DateTime manilaNow = utcNow.add(const Duration(hours: 8));
     final int hourNum = manilaNow.hour == 0
         ? 12
         : (manilaNow.hour > 12 ? manilaNow.hour - 12 : manilaNow.hour);
@@ -184,25 +181,19 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final String ss = manilaNow.second.toString().padLeft(2, '0');
     final String period = manilaNow.hour >= 12 ? 'PM' : 'AM';
 
-    final String weekday = _weekdays[manilaNow.weekday - 1];
-    final String month = _months[manilaNow.month - 1];
-    final String day = manilaNow.day.toString().padLeft(2, '0');
-    final String year = manilaNow.year.toString();
-
     if (mounted) {
       setState(() {
         _liveClockText = '$hh:$mm:$ss $period';
-        _liveDateText = '$weekday, $month $day, $year • PHT (UTC+8)';
       });
     }
   }
 
-  /// Fetches high-accuracy GPS coordinates for geofence & post-submission map
-  Future<GpsCoords> _fetchCurrentLocation() async {
+  /// Fetches high-accuracy GPS location for geofence validation
+  Future> _fetchCurrentLocation() async {
     try {
-      final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        return const GpsCoords(0.0, 0.0);
+        return {'latitude': 0.0, 'longitude': 0.0};
       }
 
       LocationPermission permission = await Geolocator.checkPermission();
@@ -210,101 +201,31 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied ||
             permission == LocationPermission.deniedForever) {
-          return const GpsCoords(0.0, 0.0);
+          return {'latitude': 0.0, 'longitude': 0.0};
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
-        return const GpsCoords(0.0, 0.0);
+        return {'latitude': 0.0, 'longitude': 0.0};
       }
 
-      final Position position = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          timeLimit: Duration(seconds: 6),
-        ),
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 5),
       );
-      return GpsCoords(position.latitude, position.longitude);
+      return {'latitude': position.latitude, 'longitude': position.longitude};
     } catch (_) {
       try {
-        final Position? lastPos = await Geolocator.getLastKnownPosition();
+        final lastPos = await Geolocator.getLastKnownPosition();
         if (lastPos != null) {
-          return GpsCoords(lastPos.latitude, lastPos.longitude);
+          return {'latitude': lastPos.latitude, 'longitude': lastPos.longitude};
         }
       } catch (_) {}
-      return const GpsCoords(0.0, 0.0);
+      return {'latitude': 0.0, 'longitude': 0.0};
     }
   }
 
-  /// Resolves a readable street / Google-style place name from GPS coordinates
-  Future<String> _resolveGoogleLocationName(double lat, double lng) async {
-    if (lat == 0.0 && lng == 0.0) {
-      return 'GPS Unavailable (Enable Location Services)';
-    }
-    try {
-      final Uri uri = Uri.parse(
-        'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$lat&lon=$lng',
-      );
-      final response = await http.get(
-        uri,
-        headers: {'User-Agent': 'SVTIMobileAttendance/1.0'},
-      ).timeout(const Duration(seconds: 5));
-
-      if (response.statusCode == 200) {
-        final dynamic data = jsonDecode(response.body);
-        if (data is Map) {
-          final dynamic address = data['address'];
-          if (address is Map) {
-            final List<String> parts = [];
-            final String? place = (data['name'] ??
-                    address['building'] ??
-                    address['amenity'] ??
-                    address['shop'])
-                ?.toString();
-            final String? road = address['road']?.toString();
-            final String? suburb = (address['suburb'] ??
-                    address['neighbourhood'] ??
-                    address['village'] ??
-                    address['quarter'])
-                ?.toString();
-            final String? city = (address['city'] ??
-                    address['town'] ??
-                    address['municipality'] ??
-                    address['county'])
-                ?.toString();
-            final String? state =
-                (address['state'] ?? address['region'])?.toString();
-
-            if (place != null && place.isNotEmpty) parts.add(place);
-            if (road != null && road.isNotEmpty && !parts.contains(road)) {
-              parts.add(road);
-            }
-            if (suburb != null &&
-                suburb.isNotEmpty &&
-                !parts.contains(suburb)) {
-              parts.add(suburb);
-            }
-            if (city != null && city.isNotEmpty && !parts.contains(city)) {
-              parts.add(city);
-            }
-            if (state != null && state.isNotEmpty && !parts.contains(state)) {
-              parts.add(state);
-            }
-
-            if (parts.isNotEmpty) {
-              return parts.join(', ');
-            }
-          }
-          if (data['display_name'] != null) {
-            return data['display_name'].toString();
-          }
-        }
-      }
-    } catch (_) {}
-    return 'Lat ${lat.toStringAsFixed(6)}, Lng ${lng.toStringAsFixed(6)}';
-  }
-
-  /// Desktop fallback camera preview (for browser testing)
+  /// Tries Desktop Live Camera stream (used for PC web)
   Future<Uint8List?> _tryDesktopLiveCamera() async {
     CameraController? controller;
     try {
@@ -337,16 +258,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         builder: (dialogContext) {
           return AlertDialog(
             backgroundColor: const Color(0xFF131B2E),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
             title: const Text(
               'Live Selfie Verification',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
               textAlign: TextAlign.center,
             ),
             content: SizedBox(
@@ -361,21 +276,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             actions: [
               TextButton(
                 onPressed: () => Navigator.of(dialogContext).pop(),
-                child: const Text(
-                  'Cancel',
-                  style: TextStyle(color: Color(0xFF94A3B8)),
-                ),
+                child: const Text('Cancel', style: TextStyle(color: Color(0xFF94A3B8))),
               ),
               ElevatedButton.icon(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF2563EB),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 12,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                 ),
                 onPressed: () async {
                   try {
@@ -386,18 +293,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     Navigator.of(dialogContext).pop();
                   }
                 },
-                icon: const Icon(
-                  Icons.camera_alt,
-                  color: Colors.white,
-                  size: 18,
-                ),
-                label: const Text(
-                  'Snap Photo',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
+                icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+                label: const Text('Snap Photo', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
               ),
             ],
           );
@@ -414,12 +311,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Captures mandatory front-camera selfie
+  /// Triggers selfie verification photo
   Future<void> _captureSelfie() async {
     try {
-      final bool isMobileDevice =
-          defaultTargetPlatform == TargetPlatform.android ||
-              defaultTargetPlatform == TargetPlatform.iOS;
+      final bool isMobileDevice = defaultTargetPlatform == TargetPlatform.android ||
+          defaultTargetPlatform == TargetPlatform.iOS;
 
       if (kIsWeb && !isMobileDevice) {
         final bytes = await _tryDesktopLiveCamera();
@@ -428,7 +324,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             _imageBytes = bytes;
             _photoBase64 = base64Encode(bytes);
           });
-          _setStatus('Selfie captured successfully!', isSuccess: true);
+          _setStatus(
+            'Selfie captured successfully!',
+            isSuccess: true,
+            autoDismissAfter: const Duration(milliseconds: 3500),
+          );
           return;
         }
       }
@@ -448,191 +348,50 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           _imageBytes = bytes;
           _photoBase64 = base64Encode(bytes);
         });
-        _setStatus('Selfie captured successfully!', isSuccess: true);
+        _setStatus(
+          'Selfie captured successfully!',
+          isSuccess: true,
+          autoDismissAfter: const Duration(milliseconds: 3500),
+        );
       }
     } catch (e) {
       _setStatus('Unable to access camera: $e', isSuccess: false);
     }
   }
 
-  /// Captures the post-submission receipt card as PNG and saves to gallery/browser
-  Future<void> _captureAndSaveScreenshot(
-    String empId,
-    String actionType,
-  ) async {
-    if (!mounted || _isSavingReceipt) return;
-    setState(() => _isSavingReceipt = true);
-
-    try {
-      await Future.delayed(const Duration(milliseconds: 250));
-      if (!mounted) return;
-
-      final RenderObject? renderObject =
-          _receiptBoundaryKey.currentContext?.findRenderObject();
-      if (renderObject is! RenderRepaintBoundary) {
-        _setStatus('Receipt view not ready yet. Try again.', isSuccess: false);
-        return;
-      }
-
-      final ui.Image image = await renderObject.toImage(pixelRatio: 3.0);
-      final ByteData? byteData =
-          await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) {
-        _setStatus('Failed to encode receipt image.', isSuccess: false);
-        return;
-      }
-
-      final Uint8List pngBytes = byteData.buffer.asUint8List();
-      final String cleanId =
-          empId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
-      final String cleanAction =
-          actionType.replaceAll(' ', '_').toUpperCase();
-      final int ts = DateTime.now().millisecondsSinceEpoch;
-      final String fileName = 'SVTI_${cleanAction}_${cleanId}_$ts';
-
-      await saveReceiptToGallery(pngBytes, fileName);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: const Color(0xFF065F46),
-            content: Text(
-              'Attendance receipt saved ($fileName.png)',
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: const Color(0xFF991B1B),
-            content: Text(
-              'Could not save screenshot: $e',
-              style: const TextStyle(color: Colors.white),
-            ),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isSavingReceipt = false);
-      }
-    }
-  }
-
-  /// Prompts user to save PNG receipt right after successful submission
-  Future<void> _promptSaveScreenshot(String empId, String actionType) async {
-    if (!mounted) return;
-    await Future.delayed(const Duration(milliseconds: 450));
-    if (!mounted) return;
-
-    await showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        backgroundColor: const Color(0xFF131B2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
-            Icon(Icons.receipt_long_rounded, color: Color(0xFF38BDF8), size: 22),
-            SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Save Attendance Receipt?',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
-        ),
-        content: Text(
-          'Save a PNG receipt of your $actionType with your GPS map and timestamp to your gallery?',
-          style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text(
-              'Later',
-              style: TextStyle(color: Color(0xFF94A3B8)),
-            ),
-          ),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF2563EB),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
-            ),
-            onPressed: () {
-              Navigator.of(dialogContext).pop();
-              _captureAndSaveScreenshot(empId, actionType);
-            },
-            icon: const Icon(
-              Icons.download_rounded,
-              color: Colors.white,
-              size: 18,
-            ),
-            label: const Text(
-              'Save PNG',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Submits strict case-sensitive attendance payload to backend
+  /// Submit Attendance for TIME IN or TIME OUT
   Future<void> _submitAttendance(String actionType) async {
     final String empId = _employeeIdController.text.trim();
     final String phone = _phoneController.text.trim();
     final String site = _siteNameController.text.trim();
 
-    final List<String> missingFields = [];
-    if (empId.isEmpty) missingFields.add('Full Name / ID');
-    if (phone.isEmpty) missingFields.add('Phone Number');
-    if (site.isEmpty) missingFields.add('Site Location');
-
-    if (missingFields.isNotEmpty) {
-      _setStatus(
-        'Missing required field(s): ${missingFields.join(', ')}. Inputs are case-sensitive.',
-        isSuccess: false,
-      );
+    // 1. STRICT VALIDATION: Check if all text fields are filled out
+    if (empId.isEmpty || phone.isEmpty || site.isEmpty) {
+      _setStatus('All fields (Name/ID, Phone, Site Location) are required.', isSuccess: false);
       return;
     }
 
+    // 2. STRICT VALIDATION: Photo is mandatory for both TIME IN & TIME OUT
     if (_imageBytes == null || _photoBase64 == null) {
-      _setStatus(
-        'Selfie verification photo is mandatory for $actionType.',
-        isSuccess: false,
-      );
+      _setStatus('Selfie verification photo is mandatory for $actionType.', isSuccess: false);
       return;
     }
+
+    // Save inputs immediately so dropdown remembers them even on retry
+    await _saveInputsToHistory(empId, phone, site);
 
     setState(() {
       _isLoading = true;
       _activeAction = actionType;
-      _statusMessage = 'Verifying GPS & recording $actionType...';
+      _statusDismissTimer?.cancel();
+      _statusMessage = 'Recording $actionType... Please wait';
       _isSuccess = true;
     });
 
     try {
-      final GpsCoords loc = await _fetchCurrentLocation();
-      final double lat = loc.latitude;
-      final double lng = loc.longitude;
-
+      final loc = await _fetchCurrentLocation();
       final Uri uri = Uri.parse('$_backendBaseUrl/api/attendance');
+
       final response = await http
           .post(
             uri,
@@ -643,72 +402,47 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               'site_name': site,
               'action_type': actionType,
               'is_overtime': _isOvertime,
-              'latitude': lat,
-              'longitude': lng,
+              'latitude': loc['latitude'],
+              'longitude': loc['longitude'],
               'photo_base64': _photoBase64 ?? '',
             }),
           )
           .timeout(const Duration(seconds: 15));
 
-      dynamic respData;
+      Map<String, dynamic> respData = {};
       try {
-        respData = jsonDecode(response.body);
+        respData = jsonDecode(response.body) as Map<String, dynamic>;
       } catch (_) {}
 
-      final bool okFlag = respData is Map &&
-          (respData['success'] == true || respData['status'] == 'success');
-
-      if (response.statusCode == 200 && okFlag) {
-        final String resolvedAddress =
-            (respData['location_name'] ?? respData['address'])?.toString() ??
-                await _resolveGoogleLocationName(lat, lng);
-
-        final DateTime submittedAt = _currentManilaTime();
-        final String verifiedEmpId =
-            (respData['employee_id'] ?? empId).toString();
-        final String verifiedSite =
-            (respData['site_name'] ?? site).toString();
-
-        final AttendanceRecord newLog = AttendanceRecord(
-          employeeId: verifiedEmpId,
-          phoneNumber: phone,
-          siteName: verifiedSite,
-          actionType: actionType,
-          isOvertime: _isOvertime,
-          timestamp: submittedAt,
-          latitude: lat,
-          longitude: lng,
-          googleLocation: resolvedAddress,
-          photoBytes: _imageBytes,
-        );
+      if (response.statusCode == 200 && (respData['success'] == true || respData['status'] == 'success')) {
+        final newLog = {
+          'employee_id': respData['employee_id'] ?? empId,
+          'phone_number': phone,
+          'site_name': respData['site_name'] ?? site,
+          'action_type': actionType,
+          'is_overtime': _isOvertime,
+          'timestamp': DateTime.now(),
+          'latitude': loc['latitude'] ?? 0.0,
+          'longitude': loc['longitude'] ?? 0.0,
+          'photo_bytes': _imageBytes,
+        };
 
         setState(() {
-          _latestReceipt = newLog;
           _recentLogs.insert(0, newLog);
         });
 
-        _setStatus(
-          respData['message']?.toString() ??
-              '$actionType recorded successfully!',
-          isSuccess: true,
-        );
-        _resetForm();
-        _promptSaveScreenshot(verifiedEmpId, actionType);
+        _setStatus(respData['message'] ?? '$actionType recorded successfully!', isSuccess: true);
+        // Clear only photo & overtime toggle; keep credentials ready for next log
+        _resetPhotoAndOvertimeOnly();
       } else {
-        final String errMsg = (respData is Map
-                ? (respData['error'] ??
-                    respData['message'] ??
-                    respData['detail'])
-                : null)
-            ?.toString() ??
-            'Submission rejected by server (HTTP ${response.statusCode}). Check exact case-sensitive spelling and site geofence.';
-        _setStatus(errMsg, isSuccess: false);
+        // Show backend geofence / validation error message WITHOUT "allowed radius"
+        final String rawErr = respData['error'] ??
+            respData['message'] ??
+            'Check-in rejected by server (${response.statusCode}).';
+        _setStatus(_sanitizeErrorMessage(rawErr), isSuccess: false);
       }
     } catch (e) {
-      _setStatus(
-        'Server connection error: Unable to reach SVTI server. Please check your internet connection.',
-        isSuccess: false,
-      );
+      _setStatus('Network error: Unable to reach SVTI server. Please check internet connection.', isSuccess: false);
     } finally {
       if (mounted) {
         setState(() {
@@ -729,60 +463,62 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           children: [
             Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
             SizedBox(width: 8),
-            Text(
-              'Reset Session',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            Text('Reset Session', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
           ],
         ),
         content: const Text(
-          'Clear current form inputs, hide the active map receipt, and return to standby mode?',
+          'Are you sure you want to clear current entry fields and reset the session? (Your saved dropdown history will remain available.)',
           style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(),
-            child: const Text(
-              'Cancel',
-              style: TextStyle(color: Color(0xFF94A3B8)),
-            ),
+            child: const Text('Cancel', style: TextStyle(color: Color(0xFF94A3B8))),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: const Color(0xFFDC2626),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(8),
-              ),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
             ),
             onPressed: () {
               Navigator.of(context).pop();
               _resetForm();
-              setState(() {
-                _latestReceipt = null;
-              });
-              _setStatus('Session reset to standby.', isSuccess: true);
+              _setStatus(
+                'Session reset successfully',
+                isSuccess: true,
+                autoDismissAfter: const Duration(seconds: 3),
+              );
             },
-            child: const Text(
-              'Reset',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+            child: const Text('Reset', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
     );
   }
 
-  void _setStatus(String message, {required bool isSuccess}) {
+  void _setStatus(String message, {required bool isSuccess, Duration? autoDismissAfter}) {
+    _statusDismissTimer?.cancel();
     setState(() {
       _statusMessage = message;
       _isSuccess = isSuccess;
+    });
+
+    if (autoDismissAfter != null) {
+      _statusDismissTimer = Timer(autoDismissAfter, () {
+        if (mounted && _statusMessage == message) {
+          setState(() {
+            _statusMessage = null;
+          });
+        }
+      });
+    }
+  }
+
+  void _resetPhotoAndOvertimeOnly() {
+    setState(() {
+      _photoBase64 = null;
+      _imageBytes = null;
+      _isOvertime = false;
     });
   }
 
@@ -800,6 +536,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   @override
   void dispose() {
     _clockTimer?.cancel();
+    _statusDismissTimer?.cancel();
     _employeeIdController.dispose();
     _phoneController.dispose();
     _siteNameController.dispose();
@@ -810,293 +547,146 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final String month = dt.month.toString().padLeft(2, '0');
     final String day = dt.day.toString().padLeft(2, '0');
     final String year = dt.year.toString();
-    final int hourNum =
-        dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
+    final int hourNum = dt.hour == 0 ? 12 : (dt.hour > 12 ? dt.hour - 12 : dt.hour);
     final String hour = hourNum.toString().padLeft(2, '0');
     final String minute = dt.minute.toString().padLeft(2, '0');
-    final String second = dt.second.toString().padLeft(2, '0');
     final String period = dt.hour >= 12 ? 'PM' : 'AM';
-    return '$month/$day/$year $hour:$minute:$second $period PHT';
+    return '$month/$day/$year $hour:$minute $period';
   }
 
-  Widget _buildInputField({
+  /// Input field with persistent history dropdown autocomplete
+  Widget _buildAutocompleteField({
     required TextEditingController controller,
-    required String labelText,
+    required List<String> suggestions,
+    String? labelText,
     required String hintText,
     required IconData icon,
     TextInputType keyboardType = TextInputType.text,
   }) {
-    return TextField(
-      controller: controller,
-      keyboardType: keyboardType,
-      textCapitalization: TextCapitalization.none,
-      autocorrect: false,
-      enableSuggestions: false,
-      style: const TextStyle(color: Colors.white, fontSize: 14),
-      decoration: InputDecoration(
-        labelText: labelText,
-        hintText: hintText,
-        labelStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
-        hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
-        prefixIcon: Icon(icon, color: const Color(0xFF38BDF8), size: 20),
-        filled: true,
-        fillColor: const Color(0xFF182238),
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFF1E293B)),
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFF1E293B)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFF2563EB), width: 1.5),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildPostSubmissionReceiptCard(AttendanceRecord receipt) {
-    final bool isTimeIn = receipt.actionType == 'Time In';
-    final double lat = receipt.latitude;
-    final double lng = receipt.longitude;
-    final bool hasValidGps = lat != 0.0 || lng != 0.0;
-    final Uint8List? photoBytes = receipt.photoBytes;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        RepaintBoundary(
-          key: _receiptBoundaryKey,
-          child: Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: const Color(0xFF131B2E),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: isTimeIn
-                    ? const Color(0xFF2563EB)
-                    : const Color(0xFFDC2626),
-                width: 1.5,
-              ),
+    return RawAutocomplete<String>(
+      textEditingController: controller,
+      focusNode: FocusNode(),
+      optionsBuilder: (TextEditingValue textEditingValue) {
+        if (suggestions.isEmpty) return const Iterable<String>.empty();
+        final query = textEditingValue.text.trim().toLowerCase();
+        if (query.isEmpty) {
+          return suggestions;
+        }
+        return suggestions.where((option) => option.toLowerCase().contains(query));
+      },
+      onSelected: (String selection) {
+        controller.text = selection;
+        controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: selection.length),
+        );
+      },
+      fieldViewBuilder: (
+        BuildContext context,
+        TextEditingController fieldController,
+        FocusNode fieldFocusNode,
+        VoidCallback onFieldSubmitted,
+      ) {
+        return TextField(
+          controller: fieldController,
+          focusNode: fieldFocusNode,
+          keyboardType: keyboardType,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          decoration: InputDecoration(
+            labelText: labelText,
+            hintText: hintText,
+            labelStyle: const TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
+            hintStyle: const TextStyle(color: Color(0xFF64748B), fontSize: 13),
+            prefixIcon: Icon(icon, color: const Color(0xFF38BDF8), size: 20),
+            suffixIcon: suggestions.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.arrow_drop_down_rounded, color: Color(0xFF94A3B8), size: 24),
+                    tooltip: 'Show saved entries',
+                    onPressed: () {
+                      fieldFocusNode.requestFocus();
+                      // Trigger options display
+                      final current = fieldController.text;
+                      fieldController.value = TextEditingValue(
+                        text: current,
+                        selection: TextSelection.collapsed(offset: current.length),
+                      );
+                    },
+                  )
+                : null,
+            filled: true,
+            fillColor: const Color(0xFF182238),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF1E293B)),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Receipt Top Banner
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: isTimeIn
-                            ? const Color(0x332563EB)
-                            : const Color(0x33DC2626),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        '${receipt.actionType.toUpperCase()} VERIFIED',
-                        style: TextStyle(
-                          color: isTimeIn
-                              ? const Color(0xFF60A5FA)
-                              : const Color(0xFFF87171),
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          letterSpacing: 0.6,
-                        ),
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      receipt.isOvertime ? 'OVERTIME' : 'REGULAR',
-                      style: const TextStyle(
-                        color: Color(0xFF38BDF8),
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-
-                // Employee Details + Selfie Thumbnail
-                Row(
-                  children: [
-                    if (photoBytes != null)
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: Image.memory(
-                          photoBytes,
-                          width: 58,
-                          height: 58,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                    if (photoBytes != null) const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            receipt.employeeId,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 15,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 3),
-                          Text(
-                            'Site: ${receipt.siteName}',
-                            style: const TextStyle(
-                              color: Color(0xFFCBD5E1),
-                              fontSize: 12,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            _formatTimestamp(receipt.timestamp),
-                            style: const TextStyle(
-                              color: Color(0xFF38BDF8),
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 12),
-                const Divider(color: Color(0xFF1E293B), height: 1),
-                const SizedBox(height: 10),
-
-                // Google Location Name & Coordinates
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(
-                      Icons.place_rounded,
-                      color: Color(0xFF34D399),
-                      size: 18,
-                    ),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Google Location / Street Address',
-                            style: TextStyle(
-                              color: Color(0xFF94A3B8),
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            receipt.googleLocation,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          if (hasValidGps) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              'GPS: ${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}',
-                              style: const TextStyle(
-                                color: Color(0xFF64748B),
-                                fontSize: 10,
-                                fontFamily: 'monospace',
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-
-                // Post-Submission Geolocation Street Map (Hidden on Standby)
-                if (hasValidGps) ...[
-                  const SizedBox(height: 12),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: SizedBox(
-                      height: 170,
-                      width: double.infinity,
-                      child: FlutterMap(
-                        options: MapOptions(
-                          initialCenter: LatLng(lat, lng),
-                          initialZoom: 16.5,
-                          interactionOptions: const InteractionOptions(
-                            flags: InteractiveFlag.pinchZoom |
-                                InteractiveFlag.drag,
-                          ),
-                        ),
-                        children: [
-                          TileLayer(
-                            urlTemplate:
-                                'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                            userAgentPackageName: 'com.svti.attendance',
-                          ),
-                          MarkerLayer(
-                            markers: [
-                              Marker(
-                                point: LatLng(lat, lng),
-                                width: 44,
-                                height: 44,
-                                child: const Icon(
-                                  Icons.location_pin,
-                                  color: Color(0xFFEF4444),
-                                  size: 40,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF1E293B)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFF2563EB), width: 1.5),
+            ),
+          ),
+        );
+      },
+      optionsViewBuilder: (
+        BuildContext context,
+        AutocompleteOnSelected<String> onSelected,
+        Iterable<String> options,
+      ) {
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: 340,
+              margin: const EdgeInsets.only(top: 4),
+              constraints: const BoxConstraints(maxHeight: 180),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E293B),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF38BDF8), width: 1),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.45),
+                    blurRadius: 12,
+                    offset: const Offset(0, 6),
                   ),
                 ],
-              ],
+              ),
+              child: ListView.separated(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                shrinkWrap: true,
+                itemCount: options.length,
+                separatorBuilder: (_, __) => const Divider(height: 1, color: Color(0xFF334155)),
+                itemBuilder: (BuildContext context, int index) {
+                  final String option = options.elementAt(index);
+                  return InkWell(
+                    onTap: () => onSelected(option),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 16),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              option,
+                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
             ),
           ),
-        ),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(
-          style: OutlinedButton.styleFrom(
-            foregroundColor: const Color(0xFF38BDF8),
-            side: const BorderSide(color: Color(0xFF2563EB)),
-            padding: const EdgeInsets.symmetric(vertical: 11),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
-            ),
-          ),
-          onPressed: _isSavingReceipt
-              ? null
-              : () => _captureAndSaveScreenshot(
-                    receipt.employeeId,
-                    receipt.actionType,
-                  ),
-          icon: const Icon(Icons.photo_library_outlined, size: 18),
-          label: Text(
-            _isSavingReceipt
-                ? 'Saving PNG Receipt...'
-                : 'Save PNG Receipt to Gallery',
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-          ),
-        ),
-      ],
+        );
+      },
     );
   }
 
@@ -1106,16 +696,16 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       backgroundColor: const Color(0xFF090D16),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 18.0, vertical: 14.0),
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
           child: Center(
             child: Container(
               constraints: const BoxConstraints(maxWidth: 420),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Top Header + Prominent Live Philippine Time Clock
+                  // Header
                   Container(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     decoration: BoxDecoration(
                       color: const Color(0xFF131B2E),
                       borderRadius: BorderRadius.circular(16),
@@ -1126,8 +716,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         Row(
                           children: [
                             Container(
-                              width: 44,
-                              height: 44,
+                              width: 46,
+                              height: 46,
                               padding: const EdgeInsets.all(4),
                               decoration: BoxDecoration(
                                 color: Colors.white,
@@ -1136,8 +726,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               child: Image.asset(
                                 'assets/svti_logo.png',
                                 fit: BoxFit.contain,
-                                errorBuilder: (context, error, stackTrace) =>
-                                    const Icon(
+                                errorBuilder: (context, error, stackTrace) => const Icon(
                                   Icons.business_rounded,
                                   color: Color(0xFF2563EB),
                                   size: 26,
@@ -1145,24 +734,34 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               ),
                             ),
                             const SizedBox(width: 12),
-                            const Expanded(
+                            Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
+                                  const Text(
                                     'SVTI Mobile',
                                     style: TextStyle(
                                       color: Colors.white,
-                                      fontSize: 18,
+                                      fontSize: 17,
                                       fontWeight: FontWeight.bold,
                                     ),
                                   ),
-                                  SizedBox(height: 2),
-                                  Text(
+                                  const Text(
                                     'Employee Field Attendance',
                                     style: TextStyle(
                                       color: Color(0xFF94A3B8),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    _liveClockText,
+                                    style: const TextStyle(
+                                      color: Color(0xFF38BDF8),
                                       fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      fontFamily: 'monospace',
                                     ),
                                   ),
                                 ],
@@ -1170,58 +769,31 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             ),
                             IconButton(
                               tooltip: 'Reset Session',
-                              icon: const Icon(
-                                Icons.power_settings_new,
-                                color: Color(0xFFDC2626),
-                                size: 24,
-                              ),
+                              icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
                               onPressed: _confirmPowerExit,
                             ),
                           ],
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 10),
+                        // Moving 1-Liner Core Values Marquee
                         Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 10,
-                          ),
+                          height: 26,
                           decoration: BoxDecoration(
-                            color: const Color(0xFF090D16),
-                            borderRadius: BorderRadius.circular(12),
+                            color: const Color(0xFF0F172A),
+                            borderRadius: BorderRadius.circular(8),
                             border: Border.all(color: const Color(0xFF1E293B)),
                           ),
-                          child: Column(
-                            children: [
-                              Text(
-                                _liveClockText,
-                                style: const TextStyle(
-                                  color: Color(0xFF38BDF8),
-                                  fontSize: 26,
-                                  fontWeight: FontWeight.w800,
-                                  fontFamily: 'monospace',
-                                  letterSpacing: 1.2,
-                                ),
-                              ),
-                              const SizedBox(height: 3),
-                              Text(
-                                _liveDateText,
-                                style: const TextStyle(
-                                  color: Color(0xFF94A3B8),
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
+                          child: const _ScrollingMarqueeText(
+                            text: 'Spirituality, Efficiency, Responsiveness, Viability, and Excellence',
                           ),
                         ),
                       ],
                     ),
                   ),
 
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 16),
 
-                  // Strict Case-Sensitive Input Form
+                  // Form Container
                   Container(
                     padding: const EdgeInsets.all(16.0),
                     decoration: BoxDecoration(
@@ -1230,48 +802,34 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                       border: Border.all(color: const Color(0xFF1E293B)),
                     ),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Padding(
-                          padding: EdgeInsets.only(bottom: 10),
-                          child: Text(
-                            'All fields are strictly case-sensitive',
-                            style: TextStyle(
-                              color: Color(0xFF94A3B8),
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        _buildInputField(
+                        _buildAutocompleteField(
                           controller: _employeeIdController,
-                          labelText: 'Full Name / ID *',
-                          hintText: 'Exact registered Full Name or ID',
+                          suggestions: _savedEmpIds,
+                          hintText: 'Full Name / ID *',
                           icon: Icons.person_outline,
                         ),
                         const SizedBox(height: 12),
-                        _buildInputField(
+                        _buildAutocompleteField(
                           controller: _phoneController,
-                          labelText: 'Phone Number *',
-                          hintText: 'Registered Phone Number',
+                          suggestions: _savedPhones,
+                          hintText: 'Phone Number *',
                           icon: Icons.smartphone,
                           keyboardType: TextInputType.phone,
                         ),
                         const SizedBox(height: 12),
-                        _buildInputField(
+                        _buildAutocompleteField(
                           controller: _siteNameController,
+                          suggestions: _savedSites,
                           labelText: 'Site Location *',
-                          hintText: 'Exact assigned Site Name',
+                          hintText: 'Site Location *',
                           icon: Icons.location_on_outlined,
                         ),
-                        const SizedBox(height: 12),
+                        const SizedBox(height: 14),
 
                         // Overtime Checkbox
                         Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 8,
-                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: BoxDecoration(
                             color: const Color(0xFF182238),
                             borderRadius: BorderRadius.circular(12),
@@ -1304,14 +862,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               Checkbox(
                                 value: _isOvertime,
                                 activeColor: const Color(0xFF2563EB),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(4),
-                                ),
-                                side: const BorderSide(
-                                  color: Color(0xFF475569),
-                                ),
-                                onChanged: (val) =>
-                                    setState(() => _isOvertime = val ?? false),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                side: const BorderSide(color: Color(0xFF475569)),
+                                onChanged: (val) => setState(() => _isOvertime = val ?? false),
                               ),
                             ],
                           ),
@@ -1320,7 +873,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                   ),
 
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 16),
 
                   // Mandatory Selfie Verification Button
                   InkWell(
@@ -1333,9 +886,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         color: const Color(0xFF131B2E),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
-                          color: _imageBytes == null
-                              ? const Color(0xFFE11D48)
-                              : const Color(0xFF2563EB),
+                          color: _imageBytes == null ? const Color(0xFFE11D48) : const Color(0xFF2563EB),
                           width: 1.5,
                         ),
                       ),
@@ -1344,20 +895,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         children: [
                           Icon(
                             Icons.camera_alt_outlined,
-                            color: _imageBytes == null
-                                ? const Color(0xFFF43F5E)
-                                : const Color(0xFF38BDF8),
+                            color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
                             size: 18,
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            _imageBytes == null
-                                ? 'Take Selfie Verification *'
-                                : 'Selfie Verified ✓ (Tap to Retake)',
+                            _imageBytes == null ? 'Take Selfie Verification *' : 'Selfie Verified ✓',
                             style: TextStyle(
-                              color: _imageBytes == null
-                                  ? const Color(0xFFF43F5E)
-                                  : const Color(0xFF38BDF8),
+                              color: _imageBytes == null ? const Color(0xFFF43F5E) : const Color(0xFF38BDF8),
                               fontWeight: FontWeight.bold,
                               fontSize: 14,
                             ),
@@ -1367,32 +912,31 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                   ),
 
-                  // Selfie Preview
+                  // Image Preview
                   if (_imageBytes != null) ...[
                     const SizedBox(height: 12),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(12),
                       child: Image.memory(
                         _imageBytes!,
-                        height: 150,
+                        height: 160,
                         width: double.infinity,
                         fit: BoxFit.cover,
                       ),
                     ),
                   ],
 
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 16),
 
-                  // TIME IN & TIME OUT Action Buttons
+                  // Action Buttons
                   Row(
                     children: [
+                      // TIME IN
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
                           child: InkWell(
-                            onTap: _isLoading
-                                ? null
-                                : () => _submitAttendance('Time In'),
+                            onTap: _isLoading ? null : () => _submitAttendance('Time In'),
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
                               height: 48,
@@ -1403,8 +947,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  if (_isLoading &&
-                                      _activeAction == 'Time In') ...[
+                                  if (_isLoading && _activeAction == 'Time In') ...[
                                     const SizedBox(
                                       width: 18,
                                       height: 18,
@@ -1415,11 +958,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                     ),
                                     const SizedBox(width: 8),
                                   ] else ...[
-                                    const Icon(
-                                      Icons.arrow_forward_rounded,
-                                      color: Colors.white,
-                                      size: 18,
-                                    ),
+                                    const Icon(Icons.arrow_forward_rounded, color: Colors.white, size: 18),
                                     const SizedBox(width: 6),
                                   ],
                                   const Text(
@@ -1438,13 +977,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         ),
                       ),
                       const SizedBox(width: 12),
+                      // TIME OUT
                       Expanded(
                         child: Material(
                           color: Colors.transparent,
                           child: InkWell(
-                            onTap: _isLoading
-                                ? null
-                                : () => _submitAttendance('Time Out'),
+                            onTap: _isLoading ? null : () => _submitAttendance('Time Out'),
                             borderRadius: BorderRadius.circular(12),
                             child: Container(
                               height: 48,
@@ -1455,8 +993,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
-                                  if (_isLoading &&
-                                      _activeAction == 'Time Out') ...[
+                                  if (_isLoading && _activeAction == 'Time Out') ...[
                                     const SizedBox(
                                       width: 18,
                                       height: 18,
@@ -1467,11 +1004,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                     ),
                                     const SizedBox(width: 8),
                                   ] else ...[
-                                    const Icon(
-                                      Icons.logout_rounded,
-                                      color: Colors.white,
-                                      size: 18,
-                                    ),
+                                    const Icon(Icons.logout_rounded, color: Colors.white, size: 18),
                                     const SizedBox(width: 6),
                                   ],
                                   const Text(
@@ -1492,28 +1025,21 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ],
                   ),
 
-                  // Server Status & Error Diagnostics Banner
+                  // Status Container
                   if (_statusMessage != null) ...[
-                    const SizedBox(height: 14),
+                    const SizedBox(height: 16),
                     AnimatedContainer(
-                      duration: const Duration(milliseconds: 250),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
+                      duration: const Duration(milliseconds: 300),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                       decoration: BoxDecoration(
                         color: _isLoading
                             ? const Color(0xFF1E293B)
-                            : (_isSuccess
-                                ? const Color(0xFF064E3B)
-                                : const Color(0xFF450A0A)),
+                            : (_isSuccess ? const Color(0xFF064E3B) : const Color(0xFF450A0A)),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(
                           color: _isLoading
                               ? const Color(0xFF3B82F6)
-                              : (_isSuccess
-                                  ? const Color(0xFF059669)
-                                  : const Color(0xFFDC2626)),
+                              : (_isSuccess ? const Color(0xFF059669) : const Color(0xFFDC2626)),
                           width: 1.2,
                         ),
                       ),
@@ -1531,12 +1057,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             )
                           else
                             Icon(
-                              _isSuccess
-                                  ? Icons.check_circle_rounded
-                                  : Icons.error_outline_rounded,
-                              color: _isSuccess
-                                  ? const Color(0xFF34D399)
-                                  : const Color(0xFFF87171),
+                              _isSuccess ? Icons.check_circle_rounded : Icons.error_outline_rounded,
+                              color: _isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171),
                               size: 20,
                             ),
                           const SizedBox(width: 10),
@@ -1546,10 +1068,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               style: TextStyle(
                                 color: _isLoading
                                     ? const Color(0xFF38BDF8)
-                                    : (_isSuccess
-                                        ? const Color(0xFF34D399)
-                                        : const Color(0xFFF87171)),
-                                fontSize: 13,
+                                    : (_isSuccess ? const Color(0xFF34D399) : const Color(0xFFF87171)),
+                                fontSize: 14,
                                 fontWeight: FontWeight.bold,
                               ),
                               textAlign: TextAlign.center,
@@ -1560,28 +1080,18 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ),
                   ],
 
-                  // Post-Submission Receipt + Street Map (Hidden on Standby)
-                  if (_latestReceipt != null) ...[
-                    const SizedBox(height: 18),
-                    _buildPostSubmissionReceiptCard(_latestReceipt!),
-                  ],
-
-                  // Recent Session Activity Logs
-                  if (_recentLogs.length > 1) ...[
-                    const SizedBox(height: 20),
+                  // ON-SCREEN ATTENDANCE LOGS DISPLAY
+                  if (_recentLogs.isNotEmpty) ...[
+                    const SizedBox(height: 24),
                     const Row(
                       children: [
-                        Icon(
-                          Icons.history_rounded,
-                          color: Color(0xFF38BDF8),
-                          size: 18,
-                        ),
+                        Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 18),
                         SizedBox(width: 8),
                         Text(
-                          'Earlier Session Submissions',
+                          'Recent On-Screen Activity Logs',
                           style: TextStyle(
                             color: Colors.white,
-                            fontSize: 14,
+                            fontSize: 15,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
@@ -1591,45 +1101,95 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                     ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
-                      itemCount: _recentLogs.length - 1,
-                      separatorBuilder: (context, index) =>
-                          const SizedBox(height: 8),
+                      itemCount: _recentLogs.length,
+                      separatorBuilder: (context, index) => const SizedBox(height: 10),
                       itemBuilder: (context, index) {
-                        final log = _recentLogs[index + 1];
-                        final bool isTimeIn = log.actionType == 'Time In';
+                        final log = _recentLogs[index];
+                        final bool isTimeIn = log['action_type'] == 'Time In';
+                        final Uint8List? photoBytes = log['photo_bytes'];
+
                         return Container(
-                          padding: const EdgeInsets.all(12),
+                          padding: const EdgeInsets.all(14),
                           decoration: BoxDecoration(
                             color: const Color(0xFF131B2E),
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(14),
                             border: Border.all(
-                              color: isTimeIn
-                                  ? const Color(0xFF2563EB)
-                                  : const Color(0xFFDC2626),
+                              color: isTimeIn ? const Color(0xFF2563EB) : const Color(0xFFDC2626),
                               width: 1,
                             ),
                           ),
                           child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              if (photoBytes != null)
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: Image.memory(
+                                    photoBytes,
+                                    width: 54,
+                                    height: 54,
+                                    fit: BoxFit.cover,
+                                  ),
+                                )
+                              else
+                                Container(
+                                  width: 54,
+                                  height: 54,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF182238),
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Icon(Icons.person, color: Color(0xFF94A3B8)),
+                                ),
+                              const SizedBox(width: 12),
                               Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Expanded(
+                                          child: Text(
+                                            log['employee_id'] ?? '',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 14,
+                                            ),
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                          decoration: BoxDecoration(
+                                            color: isTimeIn
+                                                ? const Color(0xFF2563EB).withOpacity(0.2)
+                                                : const Color(0xFFDC2626).withOpacity(0.2),
+                                            borderRadius: BorderRadius.circular(6),
+                                          ),
+                                          child: Text(
+                                            (log['action_type'] ?? '').toString().toUpperCase(),
+                                            style: TextStyle(
+                                              color: isTimeIn
+                                                  ? const Color(0xFF60A5FA)
+                                                  : const Color(0xFFF87171),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    const SizedBox(height: 4),
                                     Text(
-                                      '${log.employeeId} • ${log.actionType.toUpperCase()}',
-                                      style: const TextStyle(
-                                        color: Colors.white,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13,
-                                      ),
+                                      '📍 ${log['site_name']} • ${log['is_overtime'] == true ? 'OVERTIME' : 'REGULAR'}',
+                                      style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      '${log.siteName} • ${_formatTimestamp(log.timestamp)}',
-                                      style: const TextStyle(
-                                        color: Color(0xFF94A3B8),
-                                        fontSize: 11,
-                                      ),
+                                      _formatTimestamp(log['timestamp'] as DateTime),
+                                      style: const TextStyle(color: Color(0xFF64748B), fontSize: 11),
                                     ),
                                   ],
                                 ),
@@ -1645,6 +1205,74 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Smooth continuous 1-line scrolling ticker for SVTI Core Values
+class _ScrollingMarqueeText extends StatefulWidget {
+  final String text;
+  const _ScrollingMarqueeText({required this.text});
+
+  @override
+  State<_ScrollingMarqueeText> createState() => _ScrollingMarqueeTextState();
+}
+
+class _ScrollingMarqueeTextState extends State<_ScrollingMarqueeText> {
+  final ScrollController _scrollController = ScrollController();
+  Timer? _scrollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _startScrolling();
+    });
+  }
+
+  void _startScrolling() {
+    _scrollTimer = Timer.periodic(const Duration(milliseconds: 35), (_) {
+      if (!_scrollController.hasClients) return;
+      final maxScroll = _scrollController.position.maxScrollExtent;
+      final currentScroll = _scrollController.offset;
+      if (currentScroll >= maxScroll) {
+        _scrollController.jumpTo(0);
+      } else {
+        _scrollController.jumpTo(currentScroll + 1.2);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollTimer?.cancel();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(
+      child: ListView(
+        controller: _scrollController,
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        children: [
+          const SizedBox(width: 220),
+          Center(
+            child: Text(
+              '★  ${widget.text}  ★',
+              style: const TextStyle(
+                color: Color(0xFF38BDF8),
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.4,
+              ),
+            ),
+          ),
+          const SizedBox(width: 240),
+        ],
       ),
     );
   }
