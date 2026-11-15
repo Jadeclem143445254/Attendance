@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:geocoding/geocoding.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
@@ -141,6 +142,38 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return cleaned;
   }
 
+  /// Resolves GPS coordinates into an actual street/city address for Google Maps proof
+  Future<String> _resolveActualAddress(double lat, double lng) async {
+    if (lat == 0.0 && lng == 0.0) {
+      return 'Location unavailable';
+    }
+    if (!kIsWeb) {
+      try {
+        final placemarks = await placemarkFromCoordinates(lat, lng)
+            .timeout(const Duration(seconds: 4));
+        if (placemarks.isNotEmpty) {
+          final p = placemarks.first;
+          final parts = <String>[
+            if ((p.street ?? '').trim().isNotEmpty) p.street!.trim(),
+            if ((p.subLocality ?? '').trim().isNotEmpty) p.subLocality!.trim(),
+            if ((p.locality ?? '').trim().isNotEmpty) p.locality!.trim(),
+            if ((p.administrativeArea ?? '').trim().isNotEmpty) p.administrativeArea!.trim(),
+          ];
+          final uniqueParts = <String>[];
+          for (final part in parts) {
+            if (!uniqueParts.contains(part)) {
+              uniqueParts.add(part);
+            }
+          }
+          if (uniqueParts.isNotEmpty) {
+            return uniqueParts.join(', ');
+          }
+        }
+      } catch (_) {}
+    }
+    return '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
+  }
+
   /// Captures the pop-out receipt card and saves it to the mobile gallery
   Future<bool> _savePopupReceiptToGallery(String actionType) async {
     if (kIsWeb) return false;
@@ -176,13 +209,15 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
-  /// Shows a pop-out receipt modal after a valid Time In / Time Out with geofence details & save screenshot button
+  /// Shows a pop-out receipt modal after a valid Time In / Time Out with actual Google Maps location
   void _showValidLogReceiptPopup(Map logData) {
     final bool isTimeIn = logData['action_type'] == 'Time In';
     final Uint8List? photoBytes = logData['photo_bytes'];
     final double lat = (logData['latitude'] is num) ? (logData['latitude'] as num).toDouble() : 0.0;
     final double lng = (logData['longitude'] is num) ? (logData['longitude'] as num).toDouble() : 0.0;
-    final String gpsText = '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
+    final String actualAddress = (logData['actual_address'] ?? '').toString().trim();
+    final String coordsText = '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
+    final String googleMapsUrl = 'https://maps.google.com/?q=${lat.toStringAsFixed(6)},${lng.toStringAsFixed(6)}';
     final String formattedTime = _formatTimestamp(logData['timestamp'] as DateTime);
 
     bool isSaving = false;
@@ -205,11 +240,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    // Capturable Receipt Card
                     RepaintBoundary(
                       key: _receiptPopupKey,
                       child: Container(
-                        width: 310,
+                        width: 315,
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                           color: const Color(0xFF131B2E),
@@ -247,7 +281,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                         ),
                                       ),
                                       Text(
-                                        'Verified Geofence Log',
+                                        'Verified Google Maps Location',
                                         style: TextStyle(
                                           color: Color(0xFF34D399),
                                           fontSize: 11,
@@ -292,9 +326,19 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             const SizedBox(height: 10),
                             _receiptDetailRow('Employee', '${logData['employee_id']}'),
                             const SizedBox(height: 6),
-                            _receiptDetailRow('Site Location', '${logData['site_name']}'),
+                            _receiptDetailRow('Assigned Site', '${logData['site_name']}'),
                             const SizedBox(height: 6),
-                            _receiptDetailRow('Geofence GPS', gpsText, valueColor: const Color(0xFF34D399)),
+                            _receiptDetailRow(
+                              'Actual Location',
+                              actualAddress.isNotEmpty ? actualAddress : coordsText,
+                              valueColor: const Color(0xFF34D399),
+                            ),
+                            const SizedBox(height: 6),
+                            _receiptDetailRow(
+                              'Coordinates',
+                              coordsText,
+                              valueColor: const Color(0xFF93C5FD),
+                            ),
                             const SizedBox(height: 6),
                             _receiptDetailRow(
                               'Shift Type',
@@ -302,12 +346,37 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             ),
                             const SizedBox(height: 6),
                             _receiptDetailRow('Timestamp', formattedTime),
+                            const SizedBox(height: 10),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0F172A),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: const Color(0xFF1E293B)),
+                              ),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.location_on, color: Color(0xFFEF4444), size: 16),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      googleMapsUrl,
+                                      style: const TextStyle(
+                                        color: Color(0xFF38BDF8),
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.w500,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ],
                         ),
                       ),
                     ),
                     const SizedBox(height: 14),
-                    // Action Buttons
                     Row(
                       children: [
                         Expanded(
@@ -401,7 +470,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          width: 92,
+          width: 96,
           child: Text(
             label,
             style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 11.5),
@@ -658,6 +727,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
     try {
       final loc = await _fetchCurrentLocation();
+      final double lat = (loc['latitude'] as num?)?.toDouble() ?? 0.0;
+      final double lng = (loc['longitude'] as num?)?.toDouble() ?? 0.0;
       final Uri uri = Uri.parse('$_backendBaseUrl/api/attendance');
 
       final response = await http
@@ -670,8 +741,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               'site_name': site,
               'action_type': actionType,
               'is_overtime': _isOvertime,
-              'latitude': loc['latitude'],
-              'longitude': loc['longitude'],
+              'latitude': lat,
+              'longitude': lng,
               'photo_base64': _photoBase64 ?? '',
             }),
           )
@@ -683,6 +754,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       } catch (_) {}
 
       if (response.statusCode == 200 && (respData['success'] == true || respData['status'] == 'success')) {
+        final String actualAddress = await _resolveActualAddress(lat, lng);
+
         final newLog = {
           'employee_id': respData['employee_id'] ?? empId,
           'phone_number': phone,
@@ -690,8 +763,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           'action_type': actionType,
           'is_overtime': _isOvertime,
           'timestamp': DateTime.now(),
-          'latitude': loc['latitude'] ?? 0.0,
-          'longitude': loc['longitude'] ?? 0.0,
+          'latitude': lat,
+          'longitude': lng,
+          'actual_address': actualAddress,
           'photo_bytes': _imageBytes,
         };
 
@@ -704,7 +778,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         _setStatus(respData['message'] ?? '$actionType recorded successfully!', isSuccess: true);
         _resetPhotoAndOvertimeOnly();
 
-        // Pop out receipt modal with valid geofence coordinates & Save Screenshot button
         if (mounted) {
           _showValidLogReceiptPopup(newLog);
         }
@@ -1368,6 +1441,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                         final log = _recentLogs[index];
                         final bool isTimeIn = log['action_type'] == 'Time In';
                         final Uint8List? photoBytes = log['photo_bytes'];
+                        final String actualAddress = (log['actual_address'] ?? '').toString();
 
                         return InkWell(
                           onTap: () => _showValidLogReceiptPopup(log),
@@ -1447,8 +1521,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                       ),
                                       const SizedBox(height: 4),
                                       Text(
-                                        '📍 ${log['site_name']} • ${log['is_overtime'] == true ? 'OVERTIME' : 'REGULAR'}',
+                                        '📍 ${actualAddress.isNotEmpty ? actualAddress : log['site_name']} • ${log['is_overtime'] == true ? 'OVERTIME' : 'REGULAR'}',
                                         style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
                                       ),
                                       const SizedBox(height: 2),
                                       Text(
