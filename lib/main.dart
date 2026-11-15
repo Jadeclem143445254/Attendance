@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:geocoding/geocoding.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
 import 'package:http/http.dart' as http;
@@ -142,35 +141,28 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return cleaned;
   }
 
-  /// Resolves GPS coordinates into an actual street/city address for Google Maps proof
+  /// Resolves GPS coordinates into an actual street/city address over HTTPS (no native geocoding plugin needed)
   Future<String> _resolveActualAddress(double lat, double lng) async {
     if (lat == 0.0 && lng == 0.0) {
       return 'Location unavailable';
     }
-    if (!kIsWeb) {
-      try {
-        final placemarks = await placemarkFromCoordinates(lat, lng)
-            .timeout(const Duration(seconds: 4));
-        if (placemarks.isNotEmpty) {
-          final p = placemarks.first;
-          final parts = <String>[
-            if ((p.street ?? '').trim().isNotEmpty) p.street!.trim(),
-            if ((p.subLocality ?? '').trim().isNotEmpty) p.subLocality!.trim(),
-            if ((p.locality ?? '').trim().isNotEmpty) p.locality!.trim(),
-            if ((p.administrativeArea ?? '').trim().isNotEmpty) p.administrativeArea!.trim(),
-          ];
-          final uniqueParts = <String>[];
-          for (final part in parts) {
-            if (!uniqueParts.contains(part)) {
-              uniqueParts.add(part);
-            }
-          }
-          if (uniqueParts.isNotEmpty) {
-            return uniqueParts.join(', ');
-          }
+    try {
+      final uri = Uri.parse(
+        'https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=$lat&lon=$lng',
+      );
+      final res = await http.get(
+        uri,
+        headers: {'User-Agent': 'SVTI-Attendance-App/1.0'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final displayName = (data['display_name'] ?? '').toString().trim();
+        if (displayName.isNotEmpty) {
+          return displayName;
         }
-      } catch (_) {}
-    }
+      }
+    } catch (_) {}
     return '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
   }
 
@@ -1282,7 +1274,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
+                                mainAxisAlignment.center,
                                 children: [
                                   if (_isLoading && _activeAction == 'Time In') ...[
                                     const SizedBox(
