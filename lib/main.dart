@@ -141,7 +141,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return cleaned;
   }
 
-  /// Resolves GPS coordinates into an actual street/city address over HTTPS (no native geocoding plugin needed)
+  /// Resolves GPS coordinates into an actual street/city address over HTTPS
   Future<String> _resolveActualAddress(double lat, double lng) async {
     if (lat == 0.0 && lng == 0.0) {
       return 'Location unavailable';
@@ -260,10 +260,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: 10),
-                                const Expanded(
+                                Expanded(
                                   child: Column(
                                     crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
+                                    children: const [
                                       Text(
                                         'SVTI Attendance Receipt',
                                         style: TextStyle(
@@ -798,8 +798,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       builder: (context) => AlertDialog(
         backgroundColor: const Color(0xFF131B2E),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Row(
-          children: [
+        title: Row(
+          children: const [
             Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
             SizedBox(width: 8),
             Text('Reset Session', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
@@ -1169,10 +1169,10 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                           ),
                           child: Row(
                             children: [
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
+                                  children: const [
                                     Text(
                                       'Mark as Overtime',
                                       style: TextStyle(
@@ -1274,7 +1274,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Row(
-                                mainAxisAlignment.center,
+                                mainAxisAlignment: MainAxisAlignment.center,
                                 children: [
                                   if (_isLoading && _activeAction == 'Time In') ...[
                                     const SizedBox(
@@ -1409,8 +1409,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
                   if (_recentLogs.isNotEmpty) ...[
                     const SizedBox(height: 24),
-                    const Row(
-                      children: [
+                    Row(
+                      children: const [
                         Icon(Icons.history_rounded, color: Color(0xFF38BDF8), size: 18),
                         SizedBox(width: 8),
                         Text(
