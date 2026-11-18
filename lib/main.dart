@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:camera/camera.dart';
@@ -141,7 +143,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     return cleaned;
   }
 
-  /// Resolves GPS coordinates into an actual street/city address over HTTPS
+  /// Resolves GPS coordinates into an actual street/city address
   Future<String> _resolveActualAddress(double lat, double lng) async {
     if (lat == 0.0 && lng == 0.0) {
       return 'Location unavailable';
@@ -163,52 +165,84 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         }
       }
     } catch (_) {}
-    return '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
+    return 'Verified Location';
   }
 
-  /// Captures the pop-out receipt card and saves it to the mobile gallery
-  Future<bool> _savePopupReceiptToGallery(String actionType) async {
-    if (kIsWeb) return false;
+  /// Fetches the Google Maps tile image bytes centered on (lat, lng) so RepaintBoundary captures cleanly
+  Future<Uint8List?> _fetchGoogleMapTileBytes(double lat, double lng) async {
+    if (lat == 0.0 && lng == 0.0) return null;
     try {
-      await Future.delayed(const Duration(milliseconds: 150));
-      final boundary = _receiptPopupKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-      if (boundary == null) return false;
+      const int zoom = 16;
+      final int n = 1 << zoom;
+      final int x = ((lng + 180.0) / 360.0 * n).floor();
+      final double latRad = lat * math.pi / 180.0;
+      final int y = ((1.0 - math.log(math.tan(latRad) + 1.0 / math.cos(latRad)) / math.pi) / 2.0 * n).floor();
 
-      final ui.Image image = await boundary.toImage(pixelRatio: 3.0);
+      final uri = Uri.parse('https://mt1.google.com/vt/lyrs=m&x=$x&y=$y&z=$zoom');
+      final res = await http.get(
+        uri,
+        headers: {'User-Agent': 'Mozilla/5.0'},
+      ).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200 && res.bodyBytes.isNotEmpty) {
+        return res.bodyBytes;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Captures the pop-out receipt card and saves it directly to the phone's Pictures/Gallery
+  Future<String?> _savePopupReceiptToGallery(String actionType) async {
+    if (kIsWeb) return 'Gallery save is only supported on Android/iOS devices.';
+    try {
+      await WidgetsBinding.instance.endOfFrame;
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      final RenderObject? renderObj = _receiptPopupKey.currentContext?.findRenderObject();
+      if (renderObj is! RenderRepaintBoundary) {
+        return 'Receipt view not ready. Please try again.';
+      }
+
+      final ui.Image image = await renderObj.toImage(pixelRatio: 2.5);
       final ByteData? byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      if (byteData == null) return false;
+      if (byteData == null) {
+        return 'Failed to encode screenshot image.';
+      }
 
       final Uint8List pngBytes = byteData.buffer.asUint8List();
 
-      bool hasAccess = await Gal.hasAccess(toAlbum: true);
+      bool hasAccess = await Gal.hasAccess(toAlbum: false);
       if (!hasAccess) {
-        hasAccess = await Gal.requestAccess(toAlbum: true);
+        hasAccess = await Gal.requestAccess(toAlbum: false);
       }
 
-      if (hasAccess) {
-        final String safeAction = actionType.replaceAll(' ', '_');
-        final String fileName = 'SVTI_${safeAction}_${DateTime.now().millisecondsSinceEpoch}';
-        await Gal.putImageBytes(
-          pngBytes,
-          album: 'SVTI Attendance',
-          name: fileName,
-        );
-        return true;
+      if (!hasAccess) {
+        return 'Storage/Photos permission denied by Android.';
       }
-      return false;
-    } catch (_) {
-      return false;
+
+      final String safeAction = actionType.replaceAll(' ', '_');
+      final String fileName = 'SVTI_${safeAction}_${DateTime.now().millisecondsSinceEpoch}';
+
+      await Gal.putImageBytes(
+        pngBytes,
+        name: fileName,
+      );
+      return null; // null means success
+    } on GalException catch (e) {
+      return 'Gallery error: ${e.type.message}';
+    } catch (e) {
+      return 'Save error: $e';
     }
   }
 
-  /// Shows a pop-out receipt modal after a valid Time In / Time Out with actual Google Maps location
+  /// Shows a pop-out receipt modal after a valid Time In / Time Out with Google Map preview & actual address
   void _showValidLogReceiptPopup(Map logData) {
     final bool isTimeIn = logData['action_type'] == 'Time In';
     final Uint8List? photoBytes = logData['photo_bytes'];
+    final Uint8List? mapTileBytes = logData['map_tile_bytes'];
     final double lat = (logData['latitude'] is num) ? (logData['latitude'] as num).toDouble() : 0.0;
     final double lng = (logData['longitude'] is num) ? (logData['longitude'] as num).toDouble() : 0.0;
     final String actualAddress = (logData['actual_address'] ?? '').toString().trim();
-    final String coordsText = '${lat.toStringAsFixed(6)}, ${lng.toStringAsFixed(6)}';
     final String googleMapsUrl = 'https://maps.google.com/?q=${lat.toStringAsFixed(6)},${lng.toStringAsFixed(6)}';
     final String formattedTime = _formatTimestamp(logData['timestamp'] as DateTime);
 
@@ -308,11 +342,81 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                 borderRadius: BorderRadius.circular(10),
                                 child: Image.memory(
                                   photoBytes,
-                                  height: 150,
+                                  height: 135,
                                   width: double.infinity,
                                   fit: BoxFit.cover,
                                 ),
                               ),
+                            const SizedBox(height: 10),
+                            // Visual Google Map Box
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: Container(
+                                height: 115,
+                                width: double.infinity,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF1E293B),
+                                  border: Border.all(color: const Color(0xFF334155)),
+                                ),
+                                child: Stack(
+                                  fit: StackFit.expand,
+                                  children: [
+                                    if (mapTileBytes != null)
+                                      Image.memory(
+                                        mapTileBytes,
+                                        fit: BoxFit.cover,
+                                      )
+                                    else
+                                      Container(
+                                        color: const Color(0xFF1E293B),
+                                        alignment: Alignment.center,
+                                        child: const Text(
+                                          'Google Maps Location Pin',
+                                          style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12),
+                                        ),
+                                      ),
+                                    // Center Red Google Maps Pin Marker
+                                    Center(
+                                      child: Container(
+                                        padding: const EdgeInsets.all(4),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.9),
+                                          shape: BoxShape.circle,
+                                          boxShadow: const [
+                                            BoxShadow(color: Colors.black45, blurRadius: 6),
+                                          ],
+                                        ),
+                                        child: const Icon(
+                                          Icons.location_on,
+                                          color: Color(0xFFDC2626),
+                                          size: 26,
+                                        ),
+                                      ),
+                                    ),
+                                    // Google Maps Watermark Badge
+                                    Positioned(
+                                      left: 8,
+                                      bottom: 6,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white.withOpacity(0.92),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: const Text(
+                                          'Google Maps',
+                                          style: TextStyle(
+                                            color: Color(0xFF1E293B),
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
                             const SizedBox(height: 12),
                             const Divider(color: Color(0xFF1E293B), height: 1),
                             const SizedBox(height: 10),
@@ -322,14 +426,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                             const SizedBox(height: 6),
                             _receiptDetailRow(
                               'Actual Location',
-                              actualAddress.isNotEmpty ? actualAddress : coordsText,
+                              actualAddress.isNotEmpty ? actualAddress : 'Verified Site Area',
                               valueColor: const Color(0xFF34D399),
-                            ),
-                            const SizedBox(height: 6),
-                            _receiptDetailRow(
-                              'Coordinates',
-                              coordsText,
-                              valueColor: const Color(0xFF93C5FD),
                             ),
                             const SizedBox(height: 6),
                             _receiptDetailRow(
@@ -348,7 +446,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               ),
                               child: Row(
                                 children: [
-                                  const Icon(Icons.location_on, color: Color(0xFFEF4444), size: 16),
+                                  const Icon(Icons.map_rounded, color: Color(0xFF34D399), size: 16),
                                   const SizedBox(width: 6),
                                   Expanded(
                                     child: Text(
@@ -398,28 +496,28 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                                 ? null
                                 : () async {
                                     setDialogState(() => isSaving = true);
-                                    final ok = await _savePopupReceiptToGallery(
+                                    final String? errorMsg = await _savePopupReceiptToGallery(
                                       (logData['action_type'] ?? 'Log').toString(),
                                     );
                                     if (!dialogContext.mounted) return;
                                     setDialogState(() {
                                       isSaving = false;
-                                      isSaved = ok;
+                                      isSaved = (errorMsg == null);
                                     });
-                                    if (ok) {
+                                    if (errorMsg == null) {
                                       ScaffoldMessenger.of(this.context).showSnackBar(
                                         const SnackBar(
-                                          content: Text('Saved to mobile gallery (SVTI Attendance).'),
+                                          content: Text('Screenshot saved to your phone Gallery!'),
                                           backgroundColor: Color(0xFF065F46),
                                           duration: Duration(seconds: 3),
                                         ),
                                       );
                                     } else {
                                       ScaffoldMessenger.of(this.context).showSnackBar(
-                                        const SnackBar(
-                                          content: Text('Unable to save screenshot. Please allow Photos/Storage permission.'),
-                                          backgroundColor: Color(0xFF991B1B),
-                                          duration: Duration(seconds: 3),
+                                        SnackBar(
+                                          content: Text(errorMsg),
+                                          backgroundColor: const Color(0xFF991B1B),
+                                          duration: const Duration(seconds: 4),
                                         ),
                                       );
                                     }
@@ -746,7 +844,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       } catch (_) {}
 
       if (response.statusCode == 200 && (respData['success'] == true || respData['status'] == 'success')) {
-        final String actualAddress = await _resolveActualAddress(lat, lng);
+        final results = await Future.wait([
+          _resolveActualAddress(lat, lng),
+          _fetchGoogleMapTileBytes(lat, lng),
+        ]);
+        final String actualAddress = results[0] as String;
+        final Uint8List? mapTileBytes = results[1] as Uint8List?;
 
         final newLog = {
           'employee_id': respData['employee_id'] ?? empId,
@@ -758,6 +861,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           'latitude': lat,
           'longitude': lng,
           'actual_address': actualAddress,
+          'map_tile_bytes': mapTileBytes,
           'photo_bytes': _imageBytes,
         };
 
@@ -792,6 +896,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
   }
 
+  /// Prompts to quit the application cleanly without resetting any input fields
   void _confirmPowerExit() {
     showDialog(
       context: context,
@@ -802,11 +907,11 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           children: const [
             Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
             SizedBox(width: 8),
-            Text('Reset Session', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+            Text('Quit Application', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
           ],
         ),
         content: const Text(
-          'Are you sure you want to clear current entry fields and reset the session? (Your saved dropdown history will remain available.)',
+          'Are you sure you want to close SVTI Mobile? (Your entered details will remain saved.)',
           style: TextStyle(color: Color(0xFF94A3B8), fontSize: 13),
         ),
         actions: [
@@ -821,14 +926,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             ),
             onPressed: () {
               Navigator.of(context).pop();
-              _resetForm();
-              _setStatus(
-                'Session reset successfully',
-                isSuccess: true,
-                autoDismissAfter: const Duration(seconds: 3),
-              );
+              SystemNavigator.pop();
             },
-            child: const Text('Reset', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            child: const Text('Quit App', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -855,17 +955,6 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   void _resetPhotoAndOvertimeOnly() {
     setState(() {
-      _photoBase64 = null;
-      _imageBytes = null;
-      _isOvertime = false;
-    });
-  }
-
-  void _resetForm() {
-    setState(() {
-      _employeeIdController.clear();
-      _phoneController.clear();
-      _siteNameController.clear();
       _photoBase64 = null;
       _imageBytes = null;
       _isOvertime = false;
@@ -1104,7 +1193,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
                               ),
                             ),
                             IconButton(
-                              tooltip: 'Reset Session',
+                              tooltip: 'Quit Application',
                               icon: const Icon(Icons.power_settings_new, color: Color(0xFFDC2626), size: 24),
                               onPressed: _confirmPowerExit,
                             ),
